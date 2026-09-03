@@ -22,11 +22,14 @@ Este codigo cuenta con todos los modificadores que tiene el codigo anterior, per
     * --unfreeze_mode: con esta indicacion se define cuanto de la red neuronal se descongela para reentrenar con tus imagenes. Hay tres opciones por el momento, siendo head, partial, y full, siendo solo la ultima capa, las ultimas, o completa respectivamente. 
 
 Ejemplo: **-u train_transfer_cnn.py --model_name resnet18 --unfreeze_mode partial --epochs 10 --batch_size 128 --max_samples 50000 --experiment_name subsample10**
+
 - RTdetection.py
 Este codigo no cuenta con configuracion argparse, por lo que solo necesitas correrlo en VScode y asegurarte que la ubicacion del modelo sea la correcta.
+
 - RTdetection_transfer.py
 Dentro de este codigo se pueden correr en tiempo real cualquiera de los dos modelos establecidos en el entrenamiento de transfer learning ( MobileNet y ResNet) usando las indicaciones necesarias, de manera parecida a la ya explicada. Este codigo cuenta con algunas indicaciones ya mencionadas siendo: --model_name e img_size (recuerda que debe ser el mismo tamaño que entenamiento). A continuacion se muetran las indicaciones propias de este codigo:
     * --window_size: Cantidad de frames que se utilizan para establecer la moda y resultado de prediccion mostrado en pantalla
     * --model_path: ubicacion del modelo, que es basicamente el nombre + .pth
     * --camera_idx: numero de la camara en caso de tener varias, default es 0
+ 
 Ejemplo: **python RTdetection_transfer.py --model_name mobilenet_v3_small --model_path transfer_mobilenet_v3_small_full_model.pth --window_size 15**
