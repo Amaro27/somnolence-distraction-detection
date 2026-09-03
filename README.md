@@ -15,7 +15,7 @@ Todos los codigos a excepcion de RTdetection.py fueron programados con la librer
 
 Ejemplo de indicacion ejecutada en terminal para entrenal un modelo: **python -u train_session_split_cnn.py --epochs 5 --batch_size 128 --max_samples 50000 --experiment_name session_subsampleD1**
 
-**No es necesario poder todas las indicaciones siempre que quieras utilizar el codigo, pues todos cuentan con valores default en caso de que no los uses**
+**No es necesario poner todas las indicaciones siempre que quieras utilizar el codigo, pues todos cuentan con valores default en caso de que no los uses**
 - train_transfer_cnn.py
 Este codigo cuenta con todos los modificadores que tiene el codigo anterior, pero se agregan unos pocos relacionados al transfer learning realizado. 
     * --model_name: este indica cual de los dos modelos quieres utilizar, MobileNet o ResNet. Para MobileNet escribe mobilenet_v3_small y para ResNet resnet18.
