@@ -1,34 +1,30 @@
 """
-Head Pose Estimation — Pitch & Roll via 2D Facial Landmarks (dlib)
-Corrected Algorithm (v3)
+Head Pose Estimation — Pitch, Roll & Yaw via 2D Facial Landmarks (dlib)
+Corrected Algorithm (v4 — Yaw-Decoupled)
 
-Why the previous version failed:
-    In the previous version, the 2D angle between the nose bridge (P27→P33)
-    and chin line (P27→P8) was used. In 2D, these points all lie on the
-    vertical midline; nodding up/down (pitch) keeps them collinear (~0°),
-    while turning left/right (yaw) causes the nose tip to swing sideways.
-    Thus, that formula was computing YAW, not pitch!
+Reference:
+    head_orientation/input/head_orientation_reference.png
 
-Corrected Geometric Approach:
-    1. FACE-ALIGNED COORDINATE SYSTEM:
-       We build an intrinsic 2D coordinate frame {u_x, u_y} from the eye line (P36→P45).
-       - u_x: unit vector along eye line (measures ROLL via atan2).
-       - u_y: perpendicular unit vector pointing straight down the facial midline.
-       Because all measurements are projected onto u_y, pitch is 100% IMMUNE TO ROLL!
+Sign Conventions (from reference):
+    PITCH:  (+) Looking UP,           (-) Looking DOWN / Drooping
+    ROLL:   (+) Tilting Image-Left,   (-) Tilting Image-Right
+    YAW:    (+) Turning Image-Left,   (-) Turning Image-Right
 
-    2. SAGITTAL PITCH ESTIMATION:
-       In 3D, the nose tip (P33) protrudes forward in depth (Z > 0).
-       When the head rotates in pitch around the transverse axis:
-       - Tilting DOWN (droop): the nose tip drops along u_y (distance from eye to nose increases).
-       - Tilting UP: the nose tip rises along u_y (distance from eye to nose shrinks).
-       Projecting onto u_y:
-           d_top = (P33 - E_midpoint) · u_y
-           eta   = d_top / W_eyes  (normalized by inter-ocular distance)
-       The pitch angle is computed via the sagittal right triangle:
-           theta_pitch = -arctan((eta - eta_baseline) / k_p) * (180 / pi)
-       Sign convention matches reference:
-           (+) Looking UP
-           (-) Looking DOWN / drooping
+Why Yaw Was Mixed Up with Pitch in v3:
+    In v3, vertical distance d_top was normalized by horizontal eye width W_eyes (eta = d_top / W_eyes).
+    When rotating in yaw (angle psi), horizontal eye width foreshortens by cos(psi).
+    Because W_eyes was in the denominator, eta artificially blew up by 1/cos(psi),
+    falsely registering a ~15 degree head droop when the user simply turned their head sideways.
+
+The Solution (Pure Vertical Ratio):
+    Yaw rotates around the vertical axis u_y. By the rotation invariance theorem,
+    the projection of ANY facial vector onto u_y is completely invariant to yaw!
+    We normalize vertical eye-to-nose distance (d_top) by total vertical face height (H_face = d_top + d_bottom):
+        rho = d_top / H_face = d_top / (d_top + d_bottom)
+    Because BOTH numerator and denominator are vertical:
+        1. Scale-invariant (scales with camera distance)
+        2. Roll-invariant (projected along rotated u_y)
+        3. 100% YAW-INVARIANT (neither contracts with yaw!)
 
 Controls:
     q — quit
@@ -52,8 +48,8 @@ cap = cv2.VideoCapture(0)
 # ── Landmark indices ────────────────────────────────────────────────────────
 
 PUNTOS_ORIENTACION_DLIB = {
-    "ojo_derecho":       36,  # right eye outer corner
-    "ojo_izquierdo":     45,  # left eye outer corner
+    "ojo_derecho":       36,  # right eye outer corner (image-left)
+    "ojo_izquierdo":     45,  # left eye outer corner (image-right)
     "punta_nariz":       33,  # nose tip
     "barbilla":           8,  # chin
     "labio_derecho":     48,  # right mouth corner
@@ -65,8 +61,11 @@ INDICES_PUNTOS_DLIB = list(PUNTOS_ORIENTACION_DLIB.values())
 
 # ── Configurable parameters ─────────────────────────────────────────────────
 
-# Anthropometric constant: nose depth protrusion relative to inter-ocular width
-KP_PITCH = 0.35
+# Anthropometric constant: nose protrusion depth relative to total face height
+KP_PITCH = 0.18
+
+# Yaw sensitivity constant for eye-nose asymmetry
+KY_YAW = 0.60
 
 # Pitch thresholds (degrees)
 # (-) is looking DOWN / drooping, (+) is looking UP
@@ -76,6 +75,9 @@ PITCH_THRESH_WARNING = -15.0     # droop > 15 deg down
 # Roll thresholds (degrees deviation from baseline)
 ROLL_THRESH_MILD = 8.0
 ROLL_THRESH_WARNING = 18.0
+
+# Yaw threshold for detecting when driver is looking away (distraction)
+YAW_THRESH_LOOKAWAY = 22.0
 
 # Temporal filtering
 SUSTAINED_FRAMES = 20    # frames a condition must persist before alert
@@ -94,13 +96,15 @@ def build_face_frame(puntos):
     E_mid : np.ndarray, shape (2,)
         Midpoint between outer eye corners.
     u_x : np.ndarray, shape (2,)
-        Unit vector pointing along the eye line (left to right from subject's POV).
+        Unit vector pointing along the eye line (image-left to image-right).
     u_y : np.ndarray, shape (2,)
         Unit vector pointing downward along the facial midline.
     W_eyes : float
-        Inter-ocular distance in pixels (pitch-invariant scale factor).
+        Inter-ocular distance in pixels.
     roll_deg : float
-        Head roll angle in degrees relative to camera horizon.
+        Head roll angle in degrees.
+        (+) Tilting image-left (subject's right ear down).
+        (-) Tilting image-right (subject's left ear down).
     """
     P36 = puntos[36].astype(np.float64)  # right eye outer (image-left)
     P45 = puntos[45].astype(np.float64)  # left eye outer (image-right)
@@ -115,71 +119,82 @@ def build_face_frame(puntos):
         roll_deg = 0.0
     else:
         u_x = v_eyes / W_eyes
-        # Perpendicular vector pointing downwards (rotates u_x by 90 deg clockwise)
-        # in image coords where +y is down: [x, y] -> [-y, x]
+        # Perpendicular vector pointing downwards in image coords (+y is down): [x, y] -> [-y, x]
         u_y = np.array([-u_x[1], u_x[0]])
-        roll_deg = float(np.degrees(np.arctan2(v_eyes[1], v_eyes[0])))
+        # Negative atan2 ensures:
+        # Tilt image-left (P45 higher than P36, so P45.y < P36.y, dy < 0) -> positive (+)
+        # Tilt image-right (P45 lower than P36, so P45.y > P36.y, dy > 0) -> negative (-)
+        roll_deg = float(-np.degrees(np.arctan2(v_eyes[1], v_eyes[0])))
 
     return E_mid, u_x, u_y, W_eyes, roll_deg
 
 
 def estimate_head_pose(puntos, baseline=None):
     """
-    Computes pitch and roll angles along with intermediate geometric metrics.
+    Computes decoupled pitch, roll, and yaw angles from 2D landmarks.
 
     Parameters
     ----------
     puntos : np.ndarray, shape (68, 2)
         68 facial landmarks.
     baseline : dict or None
-        Calibrated baseline dictionary with keys 'eta' and 'roll'.
+        Calibrated baseline dictionary with keys 'rho', 'roll', and 'asym'.
 
     Returns
     -------
     metrics : dict
-        Contains:
-          - 'pitch_deg': estimated pitch angle in degrees (+ up, - down)
-          - 'roll_deg': current roll angle in degrees
-          - 'eta': current normalized eye-to-nose vertical distance
-          - 'd_top': raw pixel eye-to-nose distance along u_y
-          - 'W_eyes': eye width
-          - 'E_mid', 'u_x', 'u_y': face coordinate frame components
+        Contains 'pitch_deg', 'roll_deg', 'yaw_deg', 'rho', 'H_face', etc.
     """
     E_mid, u_x, u_y, W_eyes, roll_deg = build_face_frame(puntos)
 
+    P36 = puntos[36].astype(np.float64)  # right eye outer (image-left)
+    P45 = puntos[45].astype(np.float64)  # left eye outer (image-right)
     P33 = puntos[33].astype(np.float64)  # nose tip
     P8  = puntos[8].astype(np.float64)   # chin
 
-    # Project nose tip and chin onto the face vertical axis u_y
-    v_nose = P33 - E_mid
-    d_top = float(np.dot(v_nose, u_y))          # vertical distance: eyes to nose
-    d_bottom = float(np.dot(P8 - P33, u_y))     # vertical distance: nose to chin
+    # ── PITCH via Pure Vertical Ratio (Yaw-Invariant) ──
+    # Project eye-to-nose and nose-to-chin onto the face vertical axis u_y
+    d_top = float(np.dot(P33 - E_mid, u_y))       # vertical distance: eyes to nose
+    d_bottom = float(np.dot(P8 - P33, u_y))      # vertical distance: nose to chin
+    H_face = d_top + d_bottom                    # total face height along u_y
 
-    # Scale-invariant vertical position of nose tip
-    eta = d_top / max(W_eyes, 1e-6)
+    # Pure vertical ratio (completely independent of horizontal eye contraction during yaw)
+    rho = d_top / max(H_face, 1e-6)
 
-    # Optional: horizontal nose offset (pure YAW indicator, for verification)
-    d_lateral = float(np.dot(v_nose, u_x))
-    yaw_proxy = d_lateral / max(W_eyes, 1e-6)
+    # ── YAW via Bilateral Eye-Nose Asymmetry ──
+    dist_R = float(np.linalg.norm(P33 - P36))     # nose to right eye corner (image-left)
+    dist_L = float(np.linalg.norm(P33 - P45))     # nose to left eye corner (image-right)
+    asym_yaw = (dist_L - dist_R) / max(dist_L + dist_R, 1e-6)
+    # When turning image-left: nose moves left -> dist_L > dist_R -> asym_yaw > 0 (+)
+    # When turning image-right: nose moves right -> dist_R > dist_L -> asym_yaw < 0 (-)
 
-    # Pitch calculation from sagittal triangle
     if baseline is not None:
-        delta_eta = eta - baseline["eta"]
-        # Sagittal triangle: theta = -arctan(delta_eta / kp)
-        # Negative sign ensures:
-        # Looking DOWN -> d_top increases -> delta_eta > 0 -> theta_pitch < 0 (-)
-        # Looking UP   -> d_top shrinks   -> delta_eta < 0 -> theta_pitch > 0 (+)
-        pitch_deg = float(-np.degrees(np.arctan2(delta_eta, KP_PITCH)))
+        # Pitch: delta_rho = rho - rho_baseline
+        # Looking DOWN -> nose drops -> d_top increases -> delta_rho > 0 -> pitch_deg < 0 (-)
+        # Looking UP   -> nose rises -> d_top shrinks   -> delta_rho < 0 -> pitch_deg > 0 (+)
+        delta_rho = rho - baseline["rho"]
+        pitch_deg = float(np.degrees(np.arctan2(-delta_rho, KP_PITCH)))
+
+        # Yaw: delta_asym = asym - asym_baseline
+        delta_asym = asym_yaw - baseline["asym"]
+        yaw_deg = float(np.degrees(np.arcsin(np.clip(delta_asym / KY_YAW, -1.0, 1.0))))
+
+        delta_roll = roll_deg - baseline["roll"]
     else:
         pitch_deg = 0.0
+        yaw_deg = 0.0
+        delta_roll = 0.0
 
     return {
         "pitch_deg": pitch_deg,
         "roll_deg": roll_deg,
-        "eta": eta,
+        "yaw_deg": yaw_deg,
+        "delta_roll": delta_roll,
+        "rho": rho,
+        "asym_yaw": asym_yaw,
         "d_top": d_top,
         "d_bottom": d_bottom,
-        "yaw_proxy": yaw_proxy,
+        "H_face": H_face,
         "W_eyes": W_eyes,
         "E_mid": E_mid,
         "u_x": u_x,
@@ -197,8 +212,9 @@ class Calibrator:
         self.reset()
 
     def reset(self):
-        self.eta_buf = []
+        self.rho_buf = []
         self.roll_buf = []
+        self.asym_buf = []
         self.baseline = None
 
     @property
@@ -207,16 +223,18 @@ class Calibrator:
 
     @property
     def progress(self):
-        return min(len(self.eta_buf) / self.n_frames, 1.0)
+        return min(len(self.rho_buf) / self.n_frames, 1.0)
 
     def accumulate(self, metrics):
-        self.eta_buf.append(metrics["eta"])
+        self.rho_buf.append(metrics["rho"])
         self.roll_buf.append(metrics["roll_deg"])
+        self.asym_buf.append(metrics["asym_yaw"])
 
-        if len(self.eta_buf) >= self.n_frames:
+        if len(self.rho_buf) >= self.n_frames:
             self.baseline = {
-                "eta":  float(np.median(self.eta_buf)),
+                "rho":  float(np.median(self.rho_buf)),
                 "roll": float(np.median(self.roll_buf)),
+                "asym": float(np.median(self.asym_buf)),
             }
             return self.baseline
         return None
@@ -226,28 +244,43 @@ class Calibrator:
 
 class FatigueClassifier:
     """
-    Classifies pitch (looking down = droop) and roll deviations.
-    Sustained negative pitch indicates fatigue/microsleep.
+    Classifies pitch (looking down = droop), roll tilt, and yaw (looking away).
+    Distinguishes lateral head turn (distraction) from head drooping (somnolence).
     """
 
     def __init__(self, sustained=SUSTAINED_FRAMES):
         self.sustained = sustained
         self.pitch_counter = 0
         self.roll_counter = 0
+        self.yaw_counter = 0
 
-    def classify(self, pitch_deg, roll_deg, baseline):
+    def classify(self, pitch_deg, roll_deg, yaw_deg, baseline):
         delta_roll = roll_deg - baseline["roll"]
 
+        # ── Yaw classification (looking away / distraction) ──
+        abs_yaw = abs(yaw_deg)
+        if abs_yaw > YAW_THRESH_LOOKAWAY:
+            self.yaw_counter += 1
+            yaw_level = "LOOKING_AWAY" if self.yaw_counter > self.sustained else "TURNING"
+        else:
+            self.yaw_counter = 0
+            yaw_level = "FORWARD"
+
         # ── Pitch classification (focus on downward droop) ──
-        if pitch_deg > PITCH_THRESH_MILD:  # > -8 deg (upright / normal)
+        # If user is actively turning head in yaw (> 22 deg), do not false-trigger somnolence
+        if abs_yaw > YAW_THRESH_LOOKAWAY:
             self.pitch_counter = 0
             pitch_level = "NORMAL"
-        elif pitch_deg > PITCH_THRESH_WARNING:  # between -8 deg and -15 deg
-            self.pitch_counter += 1
-            pitch_level = "MILD_DROOP" if self.pitch_counter > self.sustained else "NORMAL"
-        else:  # <= -15 deg (pronounced drooping)
-            self.pitch_counter += 1
-            pitch_level = "FATIGUE_WARNING" if self.pitch_counter > self.sustained else "MILD_DROOP"
+        else:
+            if pitch_deg > PITCH_THRESH_MILD:  # > -8 deg (upright / normal)
+                self.pitch_counter = 0
+                pitch_level = "NORMAL"
+            elif pitch_deg > PITCH_THRESH_WARNING:  # between -8 deg and -15 deg
+                self.pitch_counter += 1
+                pitch_level = "MILD_DROOP" if self.pitch_counter > self.sustained else "NORMAL"
+            else:  # <= -15 deg (pronounced drooping)
+                self.pitch_counter += 1
+                pitch_level = "FATIGUE_WARNING" if self.pitch_counter > self.sustained else "MILD_DROOP"
 
         # ── Roll classification (lateral tilt) ──
         abs_droll = abs(delta_roll)
@@ -261,13 +294,16 @@ class FatigueClassifier:
             self.roll_counter += 1
             roll_level = "SIGNIFICANT_TILT" if self.roll_counter > self.sustained else "MILD_TILT"
 
-        return pitch_level, roll_level, delta_roll
+        return pitch_level, roll_level, yaw_level, delta_roll
 
 
 # ── Visualization Helpers ───────────────────────────────────────────────────
 
 LEVEL_COLORS = {
     "NORMAL":           (0, 255, 0),    # green
+    "FORWARD":          (0, 255, 0),
+    "TURNING":          (0, 200, 255),
+    "LOOKING_AWAY":     (0, 165, 255),  # orange
     "MILD_DROOP":       (0, 200, 255),  # yellow
     "FATIGUE_WARNING":  (0, 0, 255),    # red
     "MILD_TILT":        (0, 200, 255),
@@ -276,7 +312,7 @@ LEVEL_COLORS = {
 
 
 def draw_face_axes(frame, metrics, pitch_level):
-    """Draw the face-aligned intrinsic coordinate frame and nose projection."""
+    """Draw the face-aligned intrinsic coordinate frame and nose bridge."""
     E_mid = metrics["E_mid"].astype(int)
     u_x = metrics["u_x"]
     u_y = metrics["u_y"]
@@ -317,32 +353,47 @@ def draw_calibration_overlay(frame, progress):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
 
-def draw_hud(frame, metrics, pitch_level, roll_level, delta_roll):
-    """Draw HUD with live pitch/roll values and alerts."""
+def draw_hud(frame, metrics, pitch_level, roll_level, yaw_level, delta_roll):
+    """Draw HUD with live pitch, roll, and yaw values matching reference conventions."""
     h, w = frame.shape[:2]
     pitch_deg = metrics["pitch_deg"]
     roll_deg = metrics["roll_deg"]
+    yaw_deg = metrics["yaw_deg"]
 
-    # Status lines
+    # Status lines matching head_orientation_reference.png
     lines = [
-        f"PITCH: {pitch_deg:+6.1f} deg  [{pitch_level}]  (nodding up +, droop -)",
-        f"ROLL : {roll_deg:+6.1f} deg  (delta: {delta_roll:+5.1f} deg)  [{roll_level}]",
-        f"eta: {metrics['eta']:.3f} | scale: {metrics['W_eyes']:.0f}px",
+        f"PITCH: {pitch_deg:+6.1f} deg  [{pitch_level}]  (+ up, - droop)",
+        f"ROLL : {roll_deg:+6.1f} deg  [{roll_level}]  (+ tilt left, - tilt right)",
+        f"YAW  : {yaw_deg:+6.1f} deg  [{yaw_level}]  (+ turn left, - turn right)",
+        f"rho: {metrics['rho']:.3f} | H_face: {metrics['H_face']:.0f}px",
     ]
 
     y0 = h - 25 * len(lines) - 15
     for i, line in enumerate(lines):
         y = y0 + i * 25
         # Background shadow for clarity
-        cv2.putText(frame, line, (17, y + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 0), 2)
-        text_color = LEVEL_COLORS.get(pitch_level if i == 0 else (roll_level if i == 1 else "NORMAL"))
-        cv2.putText(frame, line, (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.52, text_color, 1)
+        cv2.putText(frame, line, (17, y + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 0, 0), 2)
+
+        if i == 0:
+            color = LEVEL_COLORS.get(pitch_level, (255, 255, 255))
+        elif i == 1:
+            color = LEVEL_COLORS.get(roll_level, (255, 255, 255))
+        elif i == 2:
+            color = LEVEL_COLORS.get(yaw_level, (255, 255, 255))
+        else:
+            color = (200, 200, 200)
+
+        cv2.putText(frame, line, (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, color, 1)
 
     # Flashing alert banner on severe fatigue
     if pitch_level == "FATIGUE_WARNING":
         cv2.rectangle(frame, (0, 0), (w, 40), (0, 0, 255), -1)
         cv2.putText(frame, "FATIGUE DETECTED: HEAD DROOPING!",
-                    (w // 2 - 190, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+                    (w // 2 - 200, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+    elif yaw_level == "LOOKING_AWAY":
+        cv2.rectangle(frame, (0, 0), (w, 35), (0, 140, 255), -1)
+        cv2.putText(frame, "DISTRACTION: HEAD TURNED AWAY",
+                    (w // 2 - 180, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.70, (255, 255, 255), 2)
 
 
 # ── Main loop ───────────────────────────────────────────────────────────────
@@ -378,13 +429,13 @@ while True:
         else:
             # Active tracking phase
             metrics = estimate_head_pose(puntos, baseline=calibrator.baseline)
-            pitch_lvl, roll_lvl, d_roll = classifier.classify(
-                metrics["pitch_deg"], metrics["roll_deg"], calibrator.baseline
+            pitch_lvl, roll_lvl, yaw_lvl, d_roll = classifier.classify(
+                metrics["pitch_deg"], metrics["roll_deg"], metrics["yaw_deg"], calibrator.baseline
             )
             draw_face_axes(frame, metrics, pitch_lvl)
-            draw_hud(frame, metrics, pitch_lvl, roll_lvl, d_roll)
+            draw_hud(frame, metrics, pitch_lvl, roll_lvl, yaw_lvl, d_roll)
 
-    cv2.imshow("Head Pose Estimation (Pitch & Roll)", frame)
+    cv2.imshow("Head Pose Estimation (Pitch, Roll, Yaw)", frame)
     key = cv2.waitKey(1) & 0xFF
 
     if key == ord('q'):
@@ -393,6 +444,7 @@ while True:
         calibrator.reset()
         classifier.pitch_counter = 0
         classifier.roll_counter = 0
+        classifier.yaw_counter = 0
 
 cap.release()
 cv2.destroyAllWindows()
