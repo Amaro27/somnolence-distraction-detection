@@ -1,0 +1,22 @@
+group,metric,count,mean,std,median,min,max
+OVERALL (All Sequences),pitch_mae,72,5.484,2.851,4.581,2.013,14.798
+OVERALL (All Sequences),pitch_rmse,72,6.745,3.358,5.993,2.599,18.816
+OVERALL (All Sequences),pitch_max,72,17.510,8.781,16.482,7.401,58.107
+OVERALL (All Sequences),roll_mae,72,2.042,0.981,1.821,0.860,5.529
+OVERALL (All Sequences),roll_rmse,72,2.549,1.166,2.330,1.050,6.550
+OVERALL (All Sequences),roll_max,72,6.747,2.947,6.067,2.870,18.500
+OVERALL (All Sequences),detection_rate,72,99.972,0.186,100.000,98.500,100.000
+Folder: uniform-light,pitch_mae,45,5.472,2.546,5.295,2.209,13.616
+Folder: uniform-light,pitch_rmse,45,6.768,2.980,6.549,2.718,15.486
+Folder: uniform-light,pitch_max,45,17.445,7.362,16.739,7.401,45.653
+Folder: uniform-light,roll_mae,45,2.067,1.078,1.711,0.860,5.529
+Folder: uniform-light,roll_rmse,45,2.575,1.301,2.333,1.050,6.550
+Folder: uniform-light,roll_max,45,6.747,3.392,5.641,2.870,18.500
+Folder: uniform-light,detection_rate,45,99.989,0.075,100.000,99.500,100.000
+Folder: varying-light,pitch_mae,27,5.503,3.350,4.484,2.013,14.798
+Folder: varying-light,pitch_rmse,27,6.708,3.972,5.297,2.599,18.816
+Folder: varying-light,pitch_max,27,17.617,10.901,13.344,8.785,58.107
+Folder: varying-light,roll_mae,27,2.000,0.811,1.877,1.221,4.561
+Folder: varying-light,roll_rmse,27,2.504,0.920,2.326,1.487,5.163
+Folder: varying-light,roll_max,27,6.745,2.059,6.825,3.094,10.703
+Folder: varying-light,detection_rate,27,99.944,0.289,100.000,98.500,100.000
