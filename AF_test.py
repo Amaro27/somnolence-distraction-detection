@@ -185,7 +185,7 @@ while True:
             threshold_adaptativo_descenso = threshold_estatico_descenso
             
             # Umbral de cierre efectivo (20% de apertura restante)
-            threshold_estatico_cierre = ear_base_cerrado + ((sensibilidad) * rango_apertura)
+            threshold_estatico_cierre = ear_base_cerrado + (sensibilidad * rango_apertura)
             threshold_adaptativo = threshold_estatico_cierre
 
             # Pre-llenado de buffers con el valor base abierto
@@ -217,7 +217,7 @@ while True:
                         rango_movil = max(0.05, np.mean(buffer_mediano_ear) - ear_base_cerrado)
                         
                         # 1. Cierre adaptativo dinámico
-                        threshold_adaptativo = ear_base_cerrado + ((sensibilidad) * rango_movil)
+                        threshold_adaptativo = ear_base_cerrado + (sensibilidad * rango_movil)
                         
                         # 2. Descenso adaptativo dinámico (unificado con FACTOR_DESCENSO)
                         threshold_adaptativo_descenso = ear_base_cerrado + (FACTOR_DESCENSO * rango_movil)
