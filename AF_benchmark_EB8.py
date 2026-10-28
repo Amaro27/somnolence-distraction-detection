@@ -23,8 +23,13 @@ def cargar_ground_truth_tag(tag_path, fps):
                 continue
             
             fid = int(parts[0])
-            state = int(parts[1])
-            is_closed = 1 if state != -1 else 0
+            
+            # EVALUACIÓN ESTRICTA: Solo es "cierre" si el anotador marcó 'C' en los atributos
+            is_closed = 0
+            if len(parts) >= 7:
+                if 'C' in parts[2:7]:
+                    is_closed = 1
+            
             gt_estados_frame[fid] = is_closed
 
             if is_closed == 1:
@@ -69,14 +74,16 @@ if fps <= 0 or np.isnan(fps):
 gt_blinks, gt_estados_frame = cargar_ground_truth_tag(TAG_PATH, fps)
 
 # ---------------------------------------------------------
-# Parámetros Fisiológicos y Adaptativos
+# Parámetros Fisiológicos Calibrados
 # ---------------------------------------------------------
 ear_base_abierto = 0.2981
 PISO_FISIOLOGICO_DLIB = 0.1525
 
 FACTOR_DESCENSO = 0.70
 SENSIBILIDAD_CIERRE = 0.80
-DURACION_MIN_FRAMES = 3
+
+# Al medir solo la fase de oclusión profunda ('C'), el evento es más corto en frames
+DURACION_MIN_FRAMES = 2
 COOLDOWN_FRAMES = 2
 
 rango_inicial = max(0.08, ear_base_abierto - PISO_FISIOLOGICO_DLIB)
@@ -84,23 +91,19 @@ threshold_adaptativo_cierre = PISO_FISIOLOGICO_DLIB + ((1.0 - SENSIBILIDAD_CIERR
 threshold_adaptativo_descenso = PISO_FISIOLOGICO_DLIB + (FACTOR_DESCENSO * rango_inicial)
 threshold_estatico_cierre = threshold_adaptativo_cierre
 
-# ---------------------------------------------------------
-# Estructura del Doble Filtro en Cascada
-# ---------------------------------------------------------
-# Etapa 1: Filtro de mediana móvil sobre la señal cruda (~5 frames)
+# Filtros en cascada
 buffer_crudo_ear = deque(maxlen=5)
-
-# Etapa 2: Media móvil sobre las medianas calculadas (~3 segundos de datos)
 buffer_mediano_ear = deque(maxlen=int(3.0 * fps))
 
 pred_blinks = []
 en_ciclo_parpadeo = False
-frame_inicio_parpadeo = 0
-alcanzo_cierre_efectivo = False
+cierre_efectivo = False
+frame_inicio_cierre = -1
+frame_fin_cierre = -1
 ultimo_frame_fin = -COOLDOWN_FRAMES
 ultimo_ear_valido = ear_base_abierto
 
-# PERCLOS (Ventana 30s)
+# PERCLOS
 VENTANA_FRAMES = int(30.0 * fps)
 buffer_ojos_pred = deque(maxlen=VENTANA_FRAMES)
 buffer_ojos_gt = deque(maxlen=VENTANA_FRAMES)
@@ -145,18 +148,13 @@ while True:
     # ---------------------------------------------------------
     # Actualización Dinámica con Doble Filtro en Cascada
     # ---------------------------------------------------------
-    # Guarda: Solo aprende si no está parpadeando y supera el descenso
     if not en_ciclo_parpadeo and ear_crudo > threshold_adaptativo_descenso:
-        # 1. Ingesta a la Etapa 1 (Buffer de Mediana)
         buffer_crudo_ear.append(ear_crudo)
         
         if len(buffer_crudo_ear) == buffer_crudo_ear.maxlen:
             ear_mediano = float(np.median(buffer_crudo_ear))
-            
-            # 2. Ingesta a la Etapa 2 (Buffer de Media Móvil)
             buffer_mediano_ear.append(ear_mediano)
             
-            # 3. Estimación del reposo y actualización de umbrales
             if len(buffer_mediano_ear) >= 15:
                 ear_base_abierto = float(np.mean(buffer_mediano_ear))
                 rango_movil = max(0.08, ear_base_abierto - PISO_FISIOLOGICO_DLIB)
@@ -164,39 +162,49 @@ while True:
                 threshold_adaptativo_cierre = PISO_FISIOLOGICO_DLIB + ((1.0 - SENSIBILIDAD_CIERRE) * rango_movil)
                 threshold_adaptativo_descenso = PISO_FISIOLOGICO_DLIB + (FACTOR_DESCENSO * rango_movil)
 
-    # Candado de seguridad inferior
     if threshold_adaptativo_cierre < threshold_estatico_cierre:
         threshold_adaptativo_cierre = threshold_estatico_cierre
 
     # ---------------------------------------------------------
-    # Detección de Parpadeos
+    # Detección y Cronometraje de Cierre Profundo ('C')
     # ---------------------------------------------------------
     if ear_crudo < threshold_adaptativo_descenso:
+        # 1. Inicia la ventana temporal del parpadeo (sin registrarlo aún)
         if not en_ciclo_parpadeo and (frame_idx - ultimo_frame_fin) > COOLDOWN_FRAMES:
             en_ciclo_parpadeo = True
-            frame_inicio_parpadeo = frame_idx
-            alcanzo_cierre_efectivo = False
+            cierre_efectivo = False
+            frame_inicio_cierre = -1
+            frame_fin_cierre = -1
 
-        if en_ciclo_parpadeo and ear_crudo <= threshold_adaptativo_cierre:
-            alcanzo_cierre_efectivo = True
+        if en_ciclo_parpadeo:
+            if ear_crudo <= threshold_adaptativo_cierre:
+                if not cierre_efectivo:
+                    # 2. Inicia el cronometraje exacto de la oclusión profunda
+                    cierre_efectivo = True
+                    frame_inicio_cierre = frame_idx
+                # 3. Empuja el fotograma final mientras el ojo siga cerrado
+                frame_fin_cierre = frame_idx
     else:
         if en_ciclo_parpadeo:
-            dur_f = frame_idx - frame_inicio_parpadeo
-            if alcanzo_cierre_efectivo and dur_f >= DURACION_MIN_FRAMES:
-                pred_blinks.append({
-                    'start': frame_inicio_parpadeo,
-                    'end': frame_idx - 1,
-                    'frames': dur_f,
-                    'duration_ms': (dur_f / fps) * 1000.0
-                })
-                ultimo_frame_fin = frame_idx - 1
+            # 4. El ojo recuperó la apertura; se consolida el parpadeo
+            if cierre_efectivo:
+                dur_f = frame_fin_cierre - frame_inicio_cierre + 1
+                if dur_f >= DURACION_MIN_FRAMES:
+                    pred_blinks.append({
+                        'start': frame_inicio_cierre,
+                        'end': frame_fin_cierre,
+                        'frames': dur_f,
+                        'duration_ms': (dur_f / fps) * 1000.0
+                    })
+                    ultimo_frame_fin = frame_idx - 1
 
             en_ciclo_parpadeo = False
-            alcanzo_cierre_efectivo = False
+            cierre_efectivo = False
 
     # ---------------------------------------------------------
-    # PERCLOS Fisiológico P80
+    # PERCLOS Fisiológico Estricto
     # ---------------------------------------------------------
+    # Ahora ambos arreglos miden estrictamente la fase de oclusión 'C'
     ojo_cerrado_pred = 1 if ear_crudo <= threshold_adaptativo_cierre else 0
     ojo_cerrado_gt = gt_estados_frame.get(frame_idx, 0)
 
@@ -256,7 +264,7 @@ mae_duracion = np.mean(errores_duracion_ms) if errores_duracion_ms else 0.0
 mae_perclos = np.mean(np.abs(np.array(log_perclos_pred) - np.array(log_perclos_gt)))
 
 print("\n" + "="*50)
-print(" RESULTADOS BENCHMARK (Eyeblink8 vs Adaptativo)")
+print(" RESULTADOS BENCHMARK (Alineado con 'C')")
 print("="*50)
 print(f"Parpadeos Reales (Ground Truth): {len(gt_blinks)}")
 print(f"Parpadeos Detectados:           {len(pred_blinks)}")
