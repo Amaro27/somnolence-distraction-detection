@@ -78,8 +78,8 @@ predictor = dlib.shape_predictor(PREDICTOR_PATH)
 # ---------------------------------------------------------
 # Padding para la Bounding Box (BB)
 # 0.0 = sin padding, 0.10 = 10% adicional por lado, 0.20 = 20%, etc.
-PADDING_FACTOR_X = 0.10  # Margen horizontal (+10% izquierda y derecha)
-PADDING_FACTOR_Y = 0.10  # Margen vertical (+10% arriba y abajo)
+PADDING_FACTOR_X = 0.0  # Margen horizontal (+10% izquierda y derecha)
+PADDING_FACTOR_Y = 0.0  # Margen vertical (+10% arriba y abajo)
 
 # Umbrales y tiempos de bostezo
 UMBRAL_MAR_BOSTEZO = 0.55        # MAR mínimo considerado como apertura excesiva
@@ -88,7 +88,7 @@ TIEMPO_PERSISTENCIA_ALARMA = 1.5 # Tiempo que permanece visible la alerta tras c
 
 # Variables de estado
 en_bostezo = False
-t_inicio_bostezo = 0.0
+contador_bostezo = 0.0           # Tiempo acumulado de bostezo (segundos)
 t_ultimo_bostezo = 0.0
 alarma_bostezo = False
 
@@ -100,11 +100,17 @@ cap = cv2.VideoCapture(0)
 print(f"[INFO] Iniciando detección de bostezo con Padding (X: {PADDING_FACTOR_X*100:.0f}%, Y: {PADDING_FACTOR_Y*100:.0f}%)...")
 print("[INFO] Presiona 'q' para salir.")
 
+t_prev = time.time()
+
 while True:
     ret, frame = cap.read()
     if not ret:
         print("[ERROR] No se pudo leer el fotograma de la cámara.")
         break
+
+    t_actual = time.time()
+    dt = max(0.0, min(t_actual - t_prev, 0.5))
+    t_prev = t_actual
 
     frame = cv2.flip(frame, 1)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -112,7 +118,6 @@ while True:
 
     rostro_detectado = False
     mar_actual = 0.0
-    t_actual = time.time()
 
     for rostro_orig in rostros:
         rostro_detectado = True
@@ -155,24 +160,19 @@ while True:
         # Lógica de detección de bostezo
         # ---------------------------------------------------------
         if mar_actual > UMBRAL_MAR_BOSTEZO:
-            if not en_bostezo:
-                en_bostezo = True
-                t_inicio_bostezo = t_actual
+            contador_bostezo = min(DURACION_LIMITE_BOSTEZO, contador_bostezo + dt)
+            en_bostezo = True
 
-            duracion_bostezo = t_actual - t_inicio_bostezo
-
-            if duracion_bostezo >= DURACION_LIMITE_BOSTEZO:
+            if contador_bostezo >= DURACION_LIMITE_BOSTEZO:
                 alarma_bostezo = True
                 t_ultimo_bostezo = t_actual
         else:
-            if en_bostezo:
-                if (t_actual - t_inicio_bostezo) >= DURACION_LIMITE_BOSTEZO:
-                    alarma_bostezo = True
-                    t_ultimo_bostezo = t_actual
+            # Si MAR baja del umbral (parpadeo, movimiento o cierre paulatino):
+            # NO resetear súbitamente: decrementar con el mismo paso temporal dt hasta llegar a 0
+            if contador_bostezo > 0:
+                contador_bostezo = max(0.0, contador_bostezo - dt)
+            if contador_bostezo == 0:
                 en_bostezo = False
-
-            if (t_actual - t_ultimo_bostezo) > TIEMPO_PERSISTENCIA_ALARMA:
-                alarma_bostezo = False
 
         # ---------------------------------------------------------
         # Información visual sobre el rostro
@@ -181,22 +181,37 @@ while True:
         if alarma_bostezo:
             cv2.putText(frame, "ALERTA: BOSTEZO PROLONGADO (>4s)", (x, pos_texto_y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 140, 255), 2)
-        elif en_bostezo:
-            duracion_parcial = t_actual - t_inicio_bostezo
-            cv2.putText(frame, f"Boca abierta: {duracion_parcial:.1f}s / {DURACION_LIMITE_BOSTEZO:.0f}s", 
+        elif contador_bostezo > 0:
+            cv2.putText(frame, f"Boca abierta: {contador_bostezo:.1f}s / {DURACION_LIMITE_BOSTEZO:.0f}s", 
                         (x, pos_texto_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
 
         break  # Procesar el primer rostro detectado
 
+    # Persistencia de alarma de bostezo
+    if alarma_bostezo and (t_actual - t_ultimo_bostezo) > TIEMPO_PERSISTENCIA_ALARMA:
+        alarma_bostezo = False
+
     # Si no se detecta rostro
     if not rostro_detectado:
+        # En lugar de reiniciar a cero de inmediato, decrementar en los mismos pasos temporales (con time) hasta 0
+        if contador_bostezo > 0:
+            contador_bostezo = max(0.0, contador_bostezo - dt)
+        if contador_bostezo == 0:
+            en_bostezo = False
+
         cv2.putText(frame, "Buscando rostro...", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-        en_bostezo = False
+
+        if alarma_bostezo:
+            cv2.putText(frame, "ALERTA: BOSTEZO PROLONGADO (>4s)", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 140, 255), 2)
+        elif contador_bostezo > 0:
+            cv2.putText(frame, f"Boca abierta: {contador_bostezo:.1f}s / {DURACION_LIMITE_BOSTEZO:.0f}s (decrementando)", 
+                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
     else:
         # Panel superior de métricas
         color_mar = (0, 140, 255) if mar_actual > UMBRAL_MAR_BOSTEZO else (255, 255, 255)
-        cv2.putText(frame, f"MAR: {mar_actual:.2f} (Umbral: {UMBRAL_MAR_BOSTEZO:.2f})", 
+        cv2.putText(frame, f"MAR: {mar_actual:.2f} (Umbral: {UMBRAL_MAR_BOSTEZO:.2f}) | Bostezo: {contador_bostezo:.2f}s / {DURACION_LIMITE_BOSTEZO:.1f}s", 
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_mar, 2)
         cv2.putText(frame, f"BB Padding: X={PADDING_FACTOR_X*100:.0f}% Y={PADDING_FACTOR_Y*100:.0f}%", 
                     (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
