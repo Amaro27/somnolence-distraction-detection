@@ -205,27 +205,25 @@ while True:
     # MONITOREO ACTIVO
     elif estado == "MONITOREO":
         if rostro_detectado:
+           # ---------------------------------------------------------
+            # FILTROS Y ACTUALIZACIÓN ADAPTATIVA EN CASCADA
             # ---------------------------------------------------------
-            # FILTROS Y ACTUALIZACIÓN ADAPTATIVA
-            # ---------------------------------------------------------
-            if ear_actual >= threshold_adaptativo:
+            # Guarda: Solo si NO está parpadeando y supera el descenso
+            if not en_ciclo_parpadeo and ear_actual > threshold_adaptativo_descenso:
                 buffer_crudo_ear.append(ear_actual)
                 if len(buffer_crudo_ear) == buffer_crudo_ear.maxlen:
-                    ear_mediano = np.median(buffer_crudo_ear)
+                    ear_mediano = float(np.median(buffer_crudo_ear))
                     buffer_mediano_ear.append(ear_mediano)
-                    if len(buffer_mediano_ear) == buffer_mediano_ear.maxlen:
-                        rango_movil = max(0.05, np.mean(buffer_mediano_ear) - ear_base_cerrado)
-                        
-                        # 1. Cierre adaptativo dinámico
+                    if len(buffer_mediano_ear) >= 15:
+                        ear_base_abierto = float(np.mean(buffer_mediano_ear))
+                        rango_movil = max(0.05, ear_base_abierto - ear_base_cerrado)
                         threshold_adaptativo = ear_base_cerrado + (sensibilidad * rango_movil)
-                        
-                        # 2. Descenso adaptativo dinámico (unificado con FACTOR_DESCENSO)
                         threshold_adaptativo_descenso = ear_base_cerrado + (FACTOR_DESCENSO * rango_movil)
 
-            val_mediana = np.median(buffer_crudo_ear) if len(buffer_crudo_ear) > 0 else ear_actual
-            val_mov_avg = np.mean(buffer_mediano_ear) if len(buffer_mediano_ear) > 0 else ear_actual
+            val_mediana = float(np.median(buffer_crudo_ear)) if len(buffer_crudo_ear) > 0 else ear_actual
+            val_mov_avg = float(np.mean(buffer_mediano_ear)) if len(buffer_mediano_ear) > 0 else ear_actual
 
-            # Piso estático para el umbral de cierre
+            # Candado de seguridad inferior
             if threshold_adaptativo < threshold_estatico_cierre:
                 threshold_adaptativo = threshold_estatico_cierre
 
@@ -233,27 +231,35 @@ while True:
             # DETECCIÓN DE PARPADEO CON CRITERIO DE PROFUNDIDAD
             # ---------------------------------------------------------
             if ear_actual < threshold_adaptativo_descenso:
+                # 1. Inicia ventana del evento al cruzar el descenso (sin cronometrar aún)
                 if not en_ciclo_parpadeo:
                     en_ciclo_parpadeo = True
-                    tiempo_inicio_parpadeo = t_actual
                     alcanzo_cierre_efectivo = False
+                    tiempo_inicio_parpadeo = 0.0
 
-                if ear_actual <= threshold_adaptativo:
-                    alcanzo_cierre_efectivo = True
-
-                duracion_actual = t_actual - tiempo_inicio_parpadeo
-                if duracion_actual >= DURACION_MAX_PARPADEO_SEG and alcanzo_cierre_efectivo:
-                    alarma_parpadeo = True
-                    tiempo_ultimo_evento_largo = t_actual
-            else:
                 if en_ciclo_parpadeo:
-                    duracion_parpadeo = t_actual - tiempo_inicio_parpadeo
-                    duracion_ultimo_parpadeo_ms = duracion_parpadeo * 1000.0
-
-                    if duracion_parpadeo >= DURACION_MAX_PARPADEO_SEG and alcanzo_cierre_efectivo:
-                        alarma_parpadeo = True
-                        tiempo_ultimo_evento_largo = t_actual
-                        print(f"[MICROSUEÑO] Parpadeo prolongado: {duracion_ultimo_parpadeo_ms:.1f} ms")
+                    # 2. Inicia el cronometraje exacto al cruzar el umbral de cierre
+                    if ear_actual <= threshold_adaptativo:
+                        if not alcanzo_cierre_efectivo:
+                            alcanzo_cierre_efectivo = True
+                            tiempo_inicio_parpadeo = t_actual
+                        
+                        # Dispara alarma instantánea si lleva mucho tiempo en cierre profundo
+                        dur_efectiva = t_actual - tiempo_inicio_parpadeo
+                        if dur_efectiva >= DURACION_MAX_PARPADEO_SEG:
+                            alarma_parpadeo = True
+                            tiempo_ultimo_evento_largo = t_actual
+            else:
+                # 3. El ojo recuperó la apertura; consolida el evento
+                if en_ciclo_parpadeo:
+                    if alcanzo_cierre_efectivo:
+                        duracion_parpadeo = t_actual - tiempo_inicio_parpadeo
+                        duracion_ultimo_parpadeo_ms = duracion_parpadeo * 1000.0
+                        
+                        if duracion_parpadeo >= DURACION_MAX_PARPADEO_SEG:
+                            alarma_parpadeo = True
+                            tiempo_ultimo_evento_largo = t_actual
+                            print(f"[MICROSUEÑO] Parpadeo profundo prolongado: {duracion_ultimo_parpadeo_ms:.1f} ms")
 
                     en_ciclo_parpadeo = False
                     alcanzo_cierre_efectivo = False
@@ -288,6 +294,7 @@ while True:
             # CÁLCULO Y ALARMA DE PERCLOS (Ventana 30s)
             # ---------------------------------------------------------
             ojo_cerrado_binario = 1 if ear_actual <= threshold_adaptativo else 0
+            
             buffer_tiempo_ojos.append((t_actual, ojo_cerrado_binario))
             while buffer_tiempo_ojos and buffer_tiempo_ojos[0][0] < (t_actual - VENTANA_TIEMPO_SEG):
                 buffer_tiempo_ojos.popleft()
