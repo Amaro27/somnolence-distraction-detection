@@ -236,6 +236,7 @@ while True:
                     en_ciclo_parpadeo = True
                     alcanzo_cierre_efectivo = False
                     tiempo_inicio_parpadeo = 0.0
+                    tiempo_fin_cierre = 0.0
 
                 if en_ciclo_parpadeo:
                     # 2. Inicia el cronometraje exacto al cruzar el umbral de cierre
@@ -243,6 +244,8 @@ while True:
                         if not alcanzo_cierre_efectivo:
                             alcanzo_cierre_efectivo = True
                             tiempo_inicio_parpadeo = t_actual
+
+                        tiempo_fin_cierre = t_actual
                         
                         # Dispara alarma instantánea si lleva mucho tiempo en cierre profundo
                         dur_efectiva = t_actual - tiempo_inicio_parpadeo
@@ -253,7 +256,7 @@ while True:
                 # 3. El ojo recuperó la apertura; consolida el evento
                 if en_ciclo_parpadeo:
                     if alcanzo_cierre_efectivo:
-                        duracion_parpadeo = t_actual - tiempo_inicio_parpadeo
+                        duracion_parpadeo = tiempo_fin_cierre - tiempo_inicio_parpadeo
                         duracion_ultimo_parpadeo_ms = duracion_parpadeo * 1000.0
                         
                         if duracion_parpadeo >= DURACION_MAX_PARPADEO_SEG:
