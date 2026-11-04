@@ -1,2 +1,8 @@
 /eyeblink8
 /eventos_parpadeos
+
+# Ignoring custom folders for local datasets -- Amaro
+# IMPORTANT to avoid deleting data when syncing changes
+dataset annotations
+YawDD dataset
+__pycache__
