@@ -1,5 +1,6 @@
 import cv2
 import dlib
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial import distance as dist
@@ -230,7 +231,10 @@ tp = 0
 fp = 0
 errores_duracion_ms = []
 
-for pred in pred_blinks:
+# Lista para guardar los datos detallados que irán al archivo CSV
+datos_exportacion = []
+
+for pred_idx, pred in enumerate(pred_blinks):
     p_set = set(range(pred['start'], pred['end'] + 1))
     mejor_iou = 0.0
     mejor_gt_idx = -1
@@ -248,20 +252,69 @@ for pred in pred_blinks:
                 mejor_iou = iou
                 mejor_gt_idx = idx
 
+    # Construir el registro del evento predicho
+    registro = {
+        'Pred_ID': pred_idx + 1,
+        'Pred_Frame_Inicio': pred['start'],
+        'Pred_Frame_Fin': pred['end'],
+        'Pred_Duracion_ms': round(pred['duration_ms'], 2),
+        'Tipo': 'Falso Positivo', # Por defecto
+        'GT_ID': None,
+        'GT_Frame_Inicio': None,
+        'GT_Frame_Fin': None,
+        'GT_Duracion_ms': None,
+        'Error_Duracion_ms': None
+    }
+
     if mejor_iou >= IOU_THRESHOLD:
         tp += 1
         matched_gt.add(mejor_gt_idx)
-        err = abs(pred['duration_ms'] - gt_blinks[mejor_gt_idx]['duration_ms'])
+        
+        gt_blink = gt_blinks[mejor_gt_idx]
+        err = abs(pred['duration_ms'] - gt_blink['duration_ms'])
         errores_duracion_ms.append(err)
+        
+        # Actualizar el registro si fue un Verdadero Positivo
+        registro['Tipo'] = 'Verdadero Positivo'
+        registro['GT_ID'] = mejor_gt_idx + 1
+        registro['GT_Frame_Inicio'] = gt_blink['start']
+        registro['GT_Frame_Fin'] = gt_blink['end']
+        registro['GT_Duracion_ms'] = round(gt_blink['duration_ms'], 2)
+        registro['Error_Duracion_ms'] = round(err, 2)
     else:
         fp += 1
+        
+    datos_exportacion.append(registro)
 
-fn = len(gt_blinks) - len(matched_gt)
+# Añadir los Falsos Negativos (parpadeos reales que el modelo no vio) al final de la tabla
+fn = 0
+for idx, gt in enumerate(gt_blinks):
+    if idx not in matched_gt:
+        fn += 1
+        datos_exportacion.append({
+            'Pred_ID': None,
+            'Pred_Frame_Inicio': None,
+            'Pred_Frame_Fin': None,
+            'Pred_Duracion_ms': None,
+            'Tipo': 'Falso Negativo',
+            'GT_ID': idx + 1,
+            'GT_Frame_Inicio': gt['start'],
+            'GT_Frame_Fin': gt['end'],
+            'GT_Duracion_ms': round(gt['duration_ms'], 2),
+            'Error_Duracion_ms': None
+        })
+
+# Cálculo de métricas globales
 precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
 recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
 f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
 mae_duracion = np.mean(errores_duracion_ms) if errores_duracion_ms else 0.0
 mae_perclos = np.mean(np.abs(np.array(log_perclos_pred) - np.array(log_perclos_gt)))
+
+# Exportar datos a CSV
+df_eventos = pd.DataFrame(datos_exportacion)
+archivo_salida = "eventos_parpadeos_benchmark1.csv"
+df_eventos.to_csv(archivo_salida, index=False, encoding='utf-8-sig')
 
 print("\n" + "="*50)
 print(" RESULTADOS BENCHMARK (Alineado con 'C')")
@@ -276,4 +329,5 @@ print(f"Recall (Sensibilidad):          {recall:.4f}")
 print(f"F1-Score:                       {f1:.4f}")
 print(f"MAE Duración de Parpadeo:       {mae_duracion:.2f} ms")
 print(f"MAE PERCLOS (Ventana 30s):      {mae_perclos:.2f} %")
-print("="*50 + "\n")
+print("="*50)
+print(f"Datos de los eventos individuales exportados a: {archivo_salida}\n")
