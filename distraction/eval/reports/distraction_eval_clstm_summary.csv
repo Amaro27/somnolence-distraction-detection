@@ -1,0 +1,2 @@
+model_name,total_samples,tp,tn,fp,fn,accuracy_pct,precision_pct,recall_pct,specificity_pct,f1_score_pct,mean_latency_ms,theoretical_fps
+GazeResNetLSTM (C-LSTM),100,49,47,3,1,96.00,94.23,98.00,94.00,96.08,31.00,32.3

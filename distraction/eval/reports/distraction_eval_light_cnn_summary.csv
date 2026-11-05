@@ -1,0 +1,2 @@
+model_name,total_samples,tp,tn,fp,fn,accuracy_pct,precision_pct,recall_pct,specificity_pct,f1_score_pct,mean_latency_ms,theoretical_fps
+LightGazeCNN,100,49,44,6,1,93.00,89.09,98.00,88.00,93.33,4.78,209.3
