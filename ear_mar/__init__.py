@@ -1,0 +1,63 @@
+"""
+Driver Fatigue & Somnolence Detection via EAR and MAR.
+
+Exposes real-time modular prediction pipeline and offline evaluation suite.
+"""
+
+from .predict.ear_mar_modular import (
+    AdaptiveFilterConfig,
+    AlertSeverity,
+    BlinkAssessment,
+    BlinkConfig,
+    BlinkDurationTracker,
+    CalibratedThresholds,
+    CalibrationConfig,
+    CalibrationPhase,
+    CascadedAdaptiveFilter,
+    EarMarAnalyzer,
+    EarMarLandmarkIndices,
+    EarMarMetrics,
+    EarMarPipeline,
+    EarMarStateAssessment,
+    EarMarVisualizer,
+    PerclosAssessment,
+    PerclosConfig,
+    RollingPerclosTracker,
+    TwoPhaseEarCalibrator,
+    VisualizerConfig,
+    YawnAssessment,
+    YawnConfig,
+    YawnDurationTracker,
+    calculate_ear,
+    calculate_mar,
+    extract_facial_regions,
+)
+
+__all__ = [
+    "AdaptiveFilterConfig",
+    "AlertSeverity",
+    "BlinkAssessment",
+    "BlinkConfig",
+    "BlinkDurationTracker",
+    "CalibratedThresholds",
+    "CalibrationConfig",
+    "CalibrationPhase",
+    "CascadedAdaptiveFilter",
+    "EarMarAnalyzer",
+    "EarMarLandmarkIndices",
+    "EarMarMetrics",
+    "EarMarPipeline",
+    "EarMarStateAssessment",
+    "EarMarVisualizer",
+    "PerclosAssessment",
+    "PerclosConfig",
+    "RollingPerclosTracker",
+    "TwoPhaseEarCalibrator",
+    "VisualizerConfig",
+    "YawnAssessment",
+    "YawnConfig",
+    "YawnDurationTracker",
+    "calculate_ear",
+    "calculate_mar",
+    "extract_facial_regions",
+]
