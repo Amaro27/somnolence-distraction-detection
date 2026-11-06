@@ -1,5 +1,6 @@
 import cv2
 import dlib
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -313,7 +314,8 @@ mae_perclos = np.mean(np.abs(np.array(log_perclos_pred) - np.array(log_perclos_g
 
 # Exportar datos a CSV
 df_eventos = pd.DataFrame(datos_exportacion)
-archivo_salida = "eventos_parpadeos_benchmark1.csv"
+archivo_salida = "eventos_parpadeos/eventos_parpadeos_benchmark1.csv"
+os.makedirs(os.path.dirname(archivo_salida), exist_ok=True)
 df_eventos.to_csv(archivo_salida, index=False, encoding='utf-8-sig')
 
 print("\n" + "="*50)
