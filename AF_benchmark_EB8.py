@@ -56,6 +56,63 @@ def cargar_ground_truth_tag(tag_path, fps):
 
     return gt_blinks, gt_estados_frame
 
+def extraer_falsos_positivos(video_path, df_eventos, output_dir="eventos_parpadeos/fps_clips"):
+    """
+    Recorta y guarda el video de los eventos clasificados como Falsos Positivos.
+    Añade un padding de 10 frames antes y después para ver el contexto del error.
+    """
+    fps_eventos = df_eventos[df_eventos['Tipo'] == 'Falso Positivo']
+    
+    if len(fps_eventos) == 0:
+        print("No se encontraron Falsos Positivos para extraer clips.")
+        return
+        
+    os.makedirs(output_dir, exist_ok=True)
+        
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"Error al abrir el video para extracción: {video_path}")
+        return
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0: fps = 30.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+
+    print(f"\nExtrayendo {len(fps_eventos)} clips de Falsos Positivos...")
+    
+    for index, row in fps_eventos.iterrows():
+        # Padding de 10 frames para entender qué provocó el error (ej. sacada hacia abajo)
+        clip_start = max(0, int(row['Pred_Frame_Inicio']) - 10)
+        clip_end = min(total_frames - 1, int(row['Pred_Frame_Fin']) + 10)
+        
+        # Guardar con el ID de la predicción y su duración
+        dur = int(row['Pred_Duracion_ms'])
+        out_filename = os.path.join(output_dir, f"FP_PredID_{int(row['Pred_ID']):03d}_Dur_{dur}ms.avi")
+        out = cv2.VideoWriter(out_filename, fourcc, fps, (width, height))
+        
+        cap.set(cv2.CAP_PROP_POS_FRAMES, clip_start)
+        
+        for f_idx in range(clip_start, clip_end + 1):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Dibujar un texto rojo para indicar visualmente que es un FP
+            cv2.putText(frame, f"Falso Positivo - Pred {int(row['Pred_ID'])}", 
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        
+            out.write(frame)
+            
+        out.release()
+        print(f" Guardado: {out_filename}")
+    
+    cap.release()
+    print(f"Extracción de clips completada en: {output_dir}/")
+
 # ---------------------------------------------------------
 # Configuración y Rutas
 # ---------------------------------------------------------
@@ -318,6 +375,9 @@ archivo_salida = "eventos_parpadeos/eventos_parpadeos_benchmark1.csv"
 os.makedirs(os.path.dirname(archivo_salida), exist_ok=True)
 df_eventos.to_csv(archivo_salida, index=False, encoding='utf-8-sig')
 
+# Extraer clips de los Falsos Positivos
+extraer_falsos_positivos(VIDEO_PATH, df_eventos)
+
 print("\n" + "="*50)
 print(" RESULTADOS BENCHMARK (Alineado con 'C')")
 print("="*50)
@@ -332,4 +392,5 @@ print(f"F1-Score:                       {f1:.4f}")
 print(f"MAE Duración de Parpadeo:       {mae_duracion:.2f} ms")
 print(f"MAE PERCLOS (Ventana 30s):      {mae_perclos:.2f} %")
 print("="*50)
-print(f"Datos de los eventos individuales exportados a: {archivo_salida}\n")
+print(f"Datos exportados a: {archivo_salida}")
+print(f"Clips de FP exportados a: eventos_parpadeos/fps_clips/")
