@@ -328,6 +328,8 @@ inline std::string resolve_onnx_model_path(const std::string& user_path, const s
     }
 
     const std::vector<std::string> rel_candidates = {
+        "../../../../../../Modelos/light_cnn_session_full_model.onnx",
+        "../../../../../Modelos/light_cnn_session_full_model.onnx",
         "../../../../Modelos/light_cnn_session_full_model.onnx",
         "../../../Modelos/light_cnn_session_full_model.onnx",
         "../../Modelos/light_cnn_session_full_model.onnx",

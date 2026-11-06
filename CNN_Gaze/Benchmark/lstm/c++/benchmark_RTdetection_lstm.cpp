@@ -330,6 +330,8 @@ inline std::string resolve_onnx_file(
     }
 
     const std::vector<std::string> rel_candidates = {
+        "../../../../../../Modelos/" + default_filename,
+        "../../../../../Modelos/" + default_filename,
         "../../../../Modelos/" + default_filename,
         "../../../Modelos/" + default_filename,
         "../../Modelos/" + default_filename,
