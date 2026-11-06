@@ -180,6 +180,9 @@ def main():
         # Benchmark complete CNN-LSTM inference latency (Spatial Feature Extraction + Temporal LSTM)
         if device.type == 'cuda':
             torch.cuda.synchronize()
+        ##################################################
+        ##################################################
+        ##################################################
         t_infer_start = time.perf_counter()
 
         # 1. Extract 512-dim feature for current frame
@@ -197,6 +200,9 @@ def main():
         if device.type == 'cuda':
             torch.cuda.synchronize()
         infer_time_ms = (time.perf_counter() - t_infer_start) * 1000.0
+        ##################################################
+        ##################################################
+        ##################################################
         inference_times.append(infer_time_ms)
 
         label = class_names[pred_idx.item()]

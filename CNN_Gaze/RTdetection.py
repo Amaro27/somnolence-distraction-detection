@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
+import os
 
 # ==========================================
 # 1. LIGHTWEIGHT CNN ARCHITECTURE
@@ -56,7 +57,7 @@ class LightGazeCNN(nn.Module):
 # 2. LOAD MODEL & INFERENCE SETUP
 # ==========================================
 def main():
-    MODEL_PATH = 'C:\\Users\\genyd\\OneDrive\\Documentos\\Trabajos\\PEF\\light_cnn_gaze_model.pth'  # Path to your saved weights
+    MODEL_PATH = os.path.join("CNN_Gaze", "Modelos", "light_cnn_session_full_model.pth")  # Path to your saved weights
     IMG_SIZE = 112                          # Match your training resolution
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

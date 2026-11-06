@@ -1,0 +1,31 @@
+*archive
+dataset
+__pycache__
+autopose
+drive_act
+
+# ── C++ & CMake Build Artifacts ───────────────────────────
+# Ignore everything inside build directories, but allow traversing subdirectories
+[Bb]uild/**
+![Bb]uild/**/
+*.exe
+
+# CMake internals and cache
+CMakeFiles/
+.cmake/
+CMakeCache.txt
+cmake_install.cmake
+build.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json
+
+# Object and intermediate compiler files
+*.o
+*.obj
+*.lib
+*.a
+*.pdb
+*.ilk
+*.idb
+*.exp
