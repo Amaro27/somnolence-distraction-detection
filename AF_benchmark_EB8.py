@@ -56,7 +56,7 @@ def cargar_ground_truth_tag(tag_path, fps):
 
     return gt_blinks, gt_estados_frame
 
-def extraer_falsos_positivos(video_path, df_eventos, output_dir="eventos_parpadeos/fps_clips"):
+def extraer_falsos_positivos(video_path, df_eventos, output_dir="eventos_parpadeos/fps_clips1"):
     """
     Recorta y guarda el video de los eventos clasificados como Falsos Positivos.
     Añade un padding de 10 frames antes y después para ver el contexto del error.
