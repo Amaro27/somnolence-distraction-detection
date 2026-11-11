@@ -11,6 +11,7 @@ drive_act
 *.exe
 
 # CMake internals and cache
+out/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
