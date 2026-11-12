@@ -4,17 +4,8 @@
 
 #include <chrono>
 #include <deque>
+#include <mutex>
 #include <string>
-
-/**
- * @brief Recorded fatigue/drowsiness cue event for multimodal fusion.
- */
-struct CueEvent {
-    CueType type;
-    CueStrength strength;
-    std::chrono::steady_clock::time_point timestamp;
-    std::string details;
-};
 
 /**
  * @brief Unified alert coordinator and state machine.
@@ -23,7 +14,8 @@ struct CueEvent {
  * 1. Evaluates 2.0-second sliding window mode for off-road gaze distraction.
  * 2. Emits placeholder print statements for alert triggers and recovery.
  * 3. Dispatches rate-controlled, non-blocking auditory alert pulses.
- * 4. Provides extension hooks for future drowsiness integration (strong cues vs. 2 light cues in 2 min).
+ * 4. Evaluates multimodal somnolence cues (1 strong cue or 2 light cues in 2 min).
+ * 5. Provides thread-safe interfaces for concurrent distraction and somnolence workers.
  */
 class AlertManager {
 public:
@@ -55,20 +47,21 @@ public:
      */
     void emit_auditory_alert(RiskLevel risk, const std::string& reason);
 
-    DriverState current_driver_state() const { return current_state_; }
-    RiskLevel current_risk() const { return current_risk_; }
+    DriverState current_driver_state() const;
+    RiskLevel current_risk() const;
 
     /**
      * @brief Resets temporal history and transitions state back to Safe.
      */
     void reset();
 
-    const AlertConfig& config() const { return config_; }
+    AlertConfig config() const;
 
 private:
     void evaluate_distraction_mode(std::chrono::steady_clock::time_point now);
     void evaluate_somnolence_cues(std::chrono::steady_clock::time_point now);
 
+    mutable std::mutex mutex_;
     AlertConfig config_;
     DriverState current_state_{DriverState::Safe};
     RiskLevel current_risk_{RiskLevel::None};

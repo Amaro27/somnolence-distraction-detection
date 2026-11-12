@@ -59,41 +59,44 @@ void ConsoleController::start() {
 }
 
 void ConsoleController::stop() {
-    if (is_running_.exchange(false)) {
-        if (worker_thread_.joinable()) {
-            worker_thread_.join();
-        }
+    is_running_.store(false);
+    if (worker_thread_.joinable()) {
+        worker_thread_.join();
     }
 }
 
 void ConsoleController::listener_loop() {
-    while (is_running_.load()) {
-        bool hit = false;
-        char ch = 0;
+    try {
+        while (is_running_.load()) {
+            bool hit = false;
+            char ch = 0;
 
 #if defined(_WIN32)
-        if (_kbhit()) {
-            ch = static_cast<char>(_getch());
-            hit = true;
-        }
+            if (_kbhit()) {
+                ch = static_cast<char>(_getch());
+                hit = true;
+            }
 #else
-        if (posix_kbhit()) {
-            ch = posix_getch();
-            hit = true;
-        }
+            if (posix_kbhit()) {
+                ch = posix_getch();
+                hit = true;
+            }
 #endif
 
-        if (hit) {
-            if (ch == 'm' || ch == 'M') {
-                if (on_toggle_movement_) on_toggle_movement_();
-            } else if (ch == 'c' || ch == 'C') {
-                if (on_calibrate_) on_calibrate_();
-            } else if (ch == 'q' || ch == 'Q') {
-                if (on_quit_) on_quit_();
-                break;
+            if (hit) {
+                if (ch == 'm' || ch == 'M') {
+                    if (on_toggle_movement_) on_toggle_movement_();
+                } else if (ch == 'c' || ch == 'C') {
+                    if (on_calibrate_) on_calibrate_();
+                } else if (ch == 'q' || ch == 'Q') {
+                    if (on_quit_) on_quit_();
+                    break;
+                }
             }
-        }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[ConsoleController Error]: " << e.what() << "\n" << std::flush;
     }
 }

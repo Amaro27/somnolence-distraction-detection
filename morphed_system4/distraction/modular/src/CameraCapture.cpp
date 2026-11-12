@@ -6,7 +6,10 @@
 #include <opencv2/videoio.hpp>
 
 CameraCapture::CameraCapture(std::string source, std::shared_ptr<ThreadSafeMailbox<cv::Mat>> mailbox)
-    : source_(std::move(source)), mailbox_(std::move(mailbox)) {}
+    : source_(std::move(source)), mailboxes_{std::move(mailbox)} {}
+
+CameraCapture::CameraCapture(std::string source, std::vector<std::shared_ptr<ThreadSafeMailbox<cv::Mat>>> mailboxes)
+    : source_(std::move(source)), mailboxes_(std::move(mailboxes)) {}
 
 CameraCapture::~CameraCapture() {
     stop();
@@ -42,13 +45,14 @@ bool CameraCapture::start() {
 }
 
 void CameraCapture::stop() {
-    if (is_running_.exchange(false)) {
-        if (mailbox_) {
-            mailbox_->stop();
+    is_running_.store(false);
+    for (auto& mb : mailboxes_) {
+        if (mb) {
+            mb->stop();
         }
-        if (worker_thread_.joinable()) {
-            worker_thread_.join();
-        }
+    }
+    if (worker_thread_.joinable()) {
+        worker_thread_.join();
         std::cout << "[*] CameraCapture thread stopped cleanly.\n";
     }
 }
@@ -72,25 +76,49 @@ void CameraCapture::capture_loop() {
     if (!cap.isOpened()) {
         std::cerr << "[!] CameraCapture thread error: Video source failed to open.\n";
         is_running_.store(false);
-        if (mailbox_) mailbox_->stop();
+        for (auto& mb : mailboxes_) {
+            if (mb) mb->stop();
+        }
         return;
+    }
+
+    double fps = cap.get(cv::CAP_PROP_FPS);
+    int frame_delay_ms = 0;
+    if (!is_numeric) {
+        if (fps <= 1.0 || fps > 120.0) fps = 30.0;
+        frame_delay_ms = static_cast<int>(1000.0 / fps);
     }
 
     cv::Mat frame;
     while (is_running_.load()) {
+        auto frame_start = std::chrono::steady_clock::now();
+
         if (!cap.read(frame) || frame.empty()) {
             std::cout << "[*] CameraCapture: Stream reached end-of-file or frame grab failed.\n";
             break;
         }
 
-        if (mailbox_) {
-            mailbox_->put(frame.clone());
+        for (auto& mb : mailboxes_) {
+            if (mb) {
+                mb->put(frame.clone());
+            }
+        }
+
+        if (frame_delay_ms > 0) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - frame_start
+            );
+            if (elapsed.count() < frame_delay_ms) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(frame_delay_ms - elapsed.count()));
+            }
         }
     }
 
     cap.release();
     is_running_.store(false);
-    if (mailbox_) {
-        mailbox_->stop();
+    for (auto& mb : mailboxes_) {
+        if (mb) {
+            mb->stop();
+        }
     }
 }

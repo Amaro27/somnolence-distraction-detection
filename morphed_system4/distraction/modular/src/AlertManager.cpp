@@ -33,6 +33,7 @@ AlertManager::AlertManager(AlertConfig config)
       last_alert_sound_time_(std::chrono::steady_clock::now() - std::chrono::seconds(10)) {}
 
 void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto now = detection.timestamp;
     gaze_window_.push_back(detection);
 
@@ -119,6 +120,7 @@ void AlertManager::evaluate_distraction_mode(std::chrono::steady_clock::time_poi
 }
 
 void AlertManager::register_cue(CueType type, CueStrength strength, const std::string& details) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto now = std::chrono::steady_clock::now();
 
     if (strength == CueStrength::Strong) {
@@ -183,6 +185,7 @@ void AlertManager::emit_auditory_alert(RiskLevel risk, const std::string& reason
 }
 
 void AlertManager::reset() {
+    std::lock_guard<std::mutex> lock(mutex_);
     gaze_window_.clear();
     cue_window_.clear();
     current_state_ = DriverState::Safe;
@@ -190,4 +193,19 @@ void AlertManager::reset() {
     window_start_time_ = std::chrono::steady_clock::now();
     has_warmed_up_ = false;
     std::cout << "[*] AlertManager state reset to Safe.\n";
+}
+
+DriverState AlertManager::current_driver_state() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return current_state_;
+}
+
+RiskLevel AlertManager::current_risk() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return current_risk_;
+}
+
+AlertConfig AlertManager::config() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_;
 }

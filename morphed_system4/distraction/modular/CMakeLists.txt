@@ -25,6 +25,7 @@ endif()
 
 find_package(Threads REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio dnn)
+find_package(dlib REQUIRED)
 
 set(MODULAR_DISTRACTION_SOURCES
     src/CameraCapture.cpp
@@ -32,6 +33,10 @@ set(MODULAR_DISTRACTION_SOURCES
     src/GazeDetector.cpp
     src/AlertManager.cpp
     src/ConsoleController.cpp
+    src/FaceLandmarkDetector.cpp
+    src/HeadOrientationDetector.cpp
+    src/EarDetector.cpp
+    src/MarDetector.cpp
     src/main.cpp
 )
 
@@ -44,6 +49,7 @@ target_include_directories(modular_distraction PRIVATE
 
 target_link_libraries(modular_distraction PRIVATE
     ${OpenCV_LIBS}
+    dlib::dlib
     Threads::Threads
 )
 

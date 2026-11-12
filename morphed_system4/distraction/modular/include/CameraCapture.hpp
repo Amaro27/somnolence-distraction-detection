@@ -6,22 +6,30 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 #include <opencv2/core/mat.hpp>
 
 /**
  * @brief Dedicated background worker thread that captures video frames.
  *
  * Runs camera capture decoupled from model inference and alarm evaluation.
- * Continuously pushes fresh frames into the ThreadSafeMailbox.
+ * Continuously pushes fresh frames into one or more ThreadSafeMailbox instances.
  */
 class CameraCapture {
 public:
     /**
-     * @brief Constructs camera capture worker.
+     * @brief Constructs camera capture worker with a single mailbox.
      * @param source Webcam index ("0") or path to a video file.
      * @param mailbox Shared mailbox receiving fresh frames.
      */
     CameraCapture(std::string source, std::shared_ptr<ThreadSafeMailbox<cv::Mat>> mailbox);
+
+    /**
+     * @brief Constructs camera capture worker with multiple consumer mailboxes.
+     * @param source Webcam index ("0") or path to a video file.
+     * @param mailboxes Vector of shared mailboxes receiving fresh frames.
+     */
+    CameraCapture(std::string source, std::vector<std::shared_ptr<ThreadSafeMailbox<cv::Mat>>> mailboxes);
 
     /**
      * @brief Destructor ensures clean worker thread shutdown.
@@ -52,7 +60,7 @@ private:
     void capture_loop();
 
     std::string source_;
-    std::shared_ptr<ThreadSafeMailbox<cv::Mat>> mailbox_;
+    std::vector<std::shared_ptr<ThreadSafeMailbox<cv::Mat>>> mailboxes_;
     std::atomic<bool> is_running_{false};
     std::thread worker_thread_;
 };
