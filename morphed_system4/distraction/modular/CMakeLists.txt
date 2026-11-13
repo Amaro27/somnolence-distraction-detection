@@ -37,6 +37,8 @@ set(MODULAR_DISTRACTION_SOURCES
     src/HeadOrientationDetector.cpp
     src/EarDetector.cpp
     src/MarDetector.cpp
+    src/SoundPlayer.cpp
+    src/CalibrationAudioGuide.cpp
     src/main.cpp
 )
 
@@ -52,6 +54,10 @@ target_link_libraries(modular_distraction PRIVATE
     dlib::dlib
     Threads::Threads
 )
+
+if(WIN32)
+    target_link_libraries(modular_distraction PRIVATE winmm)
+endif()
 
 # Ensure input/ directory is mirrored to build output directory
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/input)

@@ -258,11 +258,29 @@ struct HeadOrientationConfig {
 };
 
 /**
+ * @brief Configuration parameters for calibration acoustic guidance feedback.
+ *
+ * Sound file paths can be modified here or overridden in EarConfig.audio_config.
+ */
+struct CalibrationAudioConfig {
+    std::string phase1_instructions_path{"input/sounds/calib_phase_1.wav"};
+    std::string phase1_tone_path{"input/sounds/sine-415-Hz-1-second-padded.wav"};
+    std::string cadence_beep_path{"input/sounds/single-beep-350-hz.wav"};
+    std::string phase2_instructions_path{"input/sounds/calib_phase_2.wav"};
+    std::string success_sound_path{"input/sounds/tada-LOUD.wav"};
+
+    std::chrono::milliseconds silence_gap{1000};          // 1.0s silence gap between voice/tone and beeps
+    std::chrono::milliseconds beep_interval{500};         // 500 ms between cadence beeps
+    size_t num_beeps{8};                                  // 8 beeps total (8 * 500ms = 4.0s active measurement)
+    std::chrono::milliseconds transition_silence{1000};   // 1.0s silence during transition
+};
+
+/**
  * @brief Configuration parameters for Eye Aspect Ratio (EAR), blink, and PERCLOS.
  */
 struct EarConfig {
-    std::chrono::seconds phase_duration{4};       // 4s open, 4s closed
-    std::chrono::seconds transition_duration{2};  // 2s pause
+    std::chrono::seconds phase_duration{4};       // 4s active measurement
+    std::chrono::seconds transition_duration{2};  // 2s transition pause
     double factor_descenso{0.70};
     double sensibilidad_cierre{0.20};
     double min_dynamic_range{0.05};
@@ -273,6 +291,7 @@ struct EarConfig {
     std::chrono::seconds perclos_window{30};
     double perclos_medium_thresh{7.5};
     double perclos_high_thresh{15.0};
+    CalibrationAudioConfig audio_config;
 };
 
 /**

@@ -55,12 +55,14 @@ morphed_system4/distraction/modular/
 ├── CMakePresets.json                 # Presets for GCC (UCRT64) and Native builds
 ├── README.md                         # System documentation
 ├── model_path_resolution.patch       # Local patch storing multi-directory path resolution logic
-├── input/                            # Required model assets
+├── input/                            # Required model & acoustic assets
 │   ├── resnet18_lstm_backbone.onnx   # Spatial feature extractor ONNX model
 │   ├── resnet18_lstm_head.onnx       # Temporal LSTM classifier ONNX model
-│   └── shape_predictor_68_face_landmarks.dat # Dlib 68-point facial landmark model
+│   ├── shape_predictor_68_face_landmarks.dat # Dlib 68-point facial landmark model
+│   └── sounds/                       # WAV audio files for calibration guidance
 ├── include/
 │   ├── AlertManager.hpp              # Thread-safe alert coordinator & multimodal cue fusion
+│   ├── CalibrationAudioGuide.hpp     # Multi-stage asynchronous calibration audio sequence manager
 │   ├── CameraCapture.hpp             # Background camera worker with multi-mailbox broadcast
 │   ├── ConsoleController.hpp         # Non-blocking interactive keyboard listener
 │   ├── EarDetector.hpp               # Eye Aspect Ratio, two-phase calibration, blinks & PERCLOS
@@ -69,10 +71,12 @@ morphed_system4/distraction/modular/
 │   ├── HeadOrientationDetector.hpp   # Pitch droop estimation invariant to roll
 │   ├── MarDetector.hpp               # Mouth Aspect Ratio & sustained yawn detector
 │   ├── Preprocessor.hpp              # CLAHE, resizing & NCHW ImageNet affine normalization
+│   ├── SoundPlayer.hpp               # OS-guarded low-latency audio playback (WinMM / POSIX)
 │   ├── ThreadSafeMailbox.hpp         # Single-slot drop-oldest thread-safe frame mailbox
 │   └── Types.hpp                     # Strongly-typed wrappers, configs, DTOs, and domain enums
 └── src/
     ├── AlertManager.cpp
+    ├── CalibrationAudioGuide.cpp
     ├── CameraCapture.cpp
     ├── ConsoleController.cpp
     ├── EarDetector.cpp
@@ -81,6 +85,7 @@ morphed_system4/distraction/modular/
     ├── HeadOrientationDetector.cpp
     ├── MarDetector.cpp
     ├── Preprocessor.cpp
+    ├── SoundPlayer.cpp
     └── main.cpp                      # Dual-worker orchestrator and application lifecycle
 ```
 
@@ -131,43 +136,81 @@ Options:
 
 ---
 
-## 5. Future Roadmap: Calibration Acoustic Guidance
+## 5. Calibration Acoustic Guidance
 
-To facilitate eyes-free in-cabin calibration while the vehicle is stationary, dedicated **acoustic guidance tones** are planned.
+The system provides fully automated, eyes-free **acoustic guidance feedback** during physiological calibration when the vehicle is stationary.
 
 > [!NOTE]
-> **Separation of Concerns**: Calibration acoustic guidance tones are strictly instructional and feedback-oriented. They are completely separate and distinct from the **auditory alerts** dispatched by `AlertManager` (which communicate distraction and drowsiness risk levels).
+> **Separation of Concerns**: Calibration acoustic guidance tones are strictly instructional and feedback-oriented (`SoundPlayer` / `CalibrationAudioGuide`). They are completely separate and decoupled from the **auditory alerts** dispatched by `AlertManager` (which communicate distraction and drowsiness risk levels).
 
-### Planned Two-Sound Acoustic Pattern
+### 5.1 Where to Change Sound Paths & Settings
 
-The calibration feedback uses two primary acoustic elements:
-1. **Instruction Tone (~1.0s)**: A sustained, gentle tone indicating that a new posture/stage should be assumed.
-2. **Cadence Beeps (0.5s interval)**: A rhythmic metronome-like pulse confirming that calibration data is actively and stably being accumulated.
+All sound paths and timing parameters are defined in [`include/Types.hpp`](file:///c:/Users/joabl/OneDrive/Documentos/GitHub/somnolence-distraction-detection-merges/morphed_system4/distraction/modular/include/Types.hpp) inside `struct CalibrationAudioConfig`:
 
-### Two-Phase Calibration Timeline
+```cpp
+struct CalibrationAudioConfig {
+    // Modify any audio file path here:
+    std::string phase1_instructions_path{"input/sounds/calib_phase_1.wav"};
+    std::string phase1_tone_path        {"input/sounds/sine-415-Hz-1-second-padded.wav"};
+    std::string cadence_beep_path       {"input/sounds/single-beep-350-hz.wav"};
+    std::string phase2_instructions_path{"input/sounds/calib_phase_2.wav"};
+    std::string success_sound_path      {"input/sounds/tada-LOUD.wav"};
+
+    // Sequence timings:
+    std::chrono::milliseconds silence_gap{1000};          // Silence between speech/tone and beeps
+    std::chrono::milliseconds beep_interval{500};         // 500 ms interval between cadence beeps
+    size_t num_beeps{8};                                  // 8 beeps total (8 * 500ms = 4.0s active measurement)
+    std::chrono::milliseconds transition_silence{1000};   // Silence during transition
+};
+```
+
+You can either:
+1. **Swap/Replace files directly** inside `morphed_system4/distraction/modular/input/sounds/`.
+2. **Change default paths** in [`include/Types.hpp`](file:///c:/Users/joabl/OneDrive/Documentos/GitHub/somnolence-distraction-detection-merges/morphed_system4/distraction/modular/include/Types.hpp) under `CalibrationAudioConfig`.
+3. **Override paths programmatically** in `main.cpp` by modifying `ear_config.audio_config.*` before instantiating `EarDetector`.
+
+`SoundPlayer` automatically searches and resolves relative paths across the build directory (`input/sounds/...`), project directory (`morphed_system4/distraction/modular/input/sounds/...`), and repository root.
+
+### 5.2 OS-Guarded Sound Reproduction
+
+Sound playback is handled by [`SoundPlayer`](file:///c:/Users/joabl/OneDrive/Documentos/GitHub/somnolence-distraction-detection-merges/morphed_system4/distraction/modular/include/SoundPlayer.hpp) with compile-time OS guards:
+- **Windows (`_WIN32`)**: Native Win32 Multimedia API (`PlaySoundA` linking `-lwinmm`) using `SND_FILENAME | SND_SYNC` for speech/tones, `SND_FILENAME | SND_ASYNC` for rapid beeps, and `PlaySoundA(NULL, NULL, 0)` for instant non-blocking cancellation.
+- **Linux / macOS (`__linux__` / `__APPLE__`)**: POSIX subcommands (`aplay -q` / `paplay`) with killall termination.
+- **Other OS**: Clean no-op fallback.
+
+### 5.3 Active Calibration Acoustic Sequence
 
 ```
-[Start Calibration ('c')]
+[User presses 'c' while Stationary]
         │
         ▼
- Phase 1: Neutral Head Pose & Open Eyes (~4 seconds)
-  ├── 1.0s Instruction Tone ("Look straight ahead with eyes open")
-  ├── 1.0 - 2.0s Brief Silence / Stabilization window
-  └── Active Measurement: 8 Beeps over 4.0 seconds (1 beep every 0.5s)
+ Phase 1: Neutral Head Pose & Open Eyes
+  ├── 1. Guided Instructions: "calib_phase_1.wav" (~7.7s)
+  ├── 2. Silence Gap (1.0s)
+  ├── 3. Posture Preparation Tone: "sine-415-Hz-1-second-padded.wav" (~1.4s)
+  ├── 4. Silence Gap (1.0s)
+  └── 5. Active Measurement Window (4.0 seconds):
+         8 cadence beeps ("single-beep-350-hz.wav"), 1 beep every 500 ms.
+         *EAR open eye aperture & Head neutral pitch (rho) are actively accumulated.*
         │
         ▼
- Transition (~2 seconds)
-  └── Silence / Transition prompt ("Close your eyes now and hold")
+ Transition (~1.0s)
+  ├── Head orientation neutral baseline (rho) finalized.
+  └── Brief Silence (no transition tone).
         │
         ▼
- Phase 2: Closed Eyes Floor Baseline (~4 seconds)
-  ├── 1.0s Instruction Tone ("Keep eyes gently closed")
-  ├── 1.0 - 2.0s Brief Silence / Stabilization window
-  └── Active Measurement: 8 Beeps over 4.0 seconds (1 beep every 0.5s)
+ Phase 2: Closed Eyes Floor Baseline
+  ├── 1. Guided Instructions: "calib_phase_2.wav" (~7.6s) [replaces 1s tone]
+  ├── 2. Silence Gap (1.0s)
+  └── 3. Active Measurement Window (4.0 seconds):
+         8 cadence beeps ("single-beep-350-hz.wav"), 1 beep every 500 ms.
+         *EAR closed eye floor is actively accumulated.*
         │
         ▼
  Completion
-  └── Distinct Harmonious Success Chime -> Transitions system to Completed (Active Monitoring)
+  ├── Compute calibrated descent (70%) and closure (20%) thresholds.
+  ├── Success Chime: "tada-LOUD.wav" (~1.6s).
+  └── Transition to Completed (Active Driver Monitoring Enabled).
 ```
 
-*(Note: Specific sound frequencies, durations, and volume profiles may be calibrated during in-vehicle acoustic testing).*
+If the vehicle begins moving, the driver's face is lost, or the user quits at **any** point during calibration, audio playback is stopped immediately and state is cleanly reverted to `Pending`.

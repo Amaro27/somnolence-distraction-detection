@@ -7,11 +7,14 @@
 #include <numeric>
 
 namespace {
-double compute_median(std::vector<double> vals) {
+double compute_median(std::vector<double>& vals) {
     if (vals.empty()) return 0.0;
     std::sort(vals.begin(), vals.end());
-    size_t n = vals.size();
-    return (n % 2 == 1) ? vals[n / 2] : (vals[n / 2 - 1] + vals[n / 2]) * 0.5;
+    size_t mid = vals.size() / 2;
+    if (vals.size() % 2 == 0) {
+        return (vals[mid - 1] + vals[mid]) * 0.5;
+    }
+    return vals[mid];
 }
 
 double compute_mean(const std::vector<double>& vals) {
@@ -22,36 +25,52 @@ double compute_mean(const std::vector<double>& vals) {
 } // namespace
 
 EarDetector::EarDetector(EarConfig config)
-    : config_(config),
-      phase_start_(std::chrono::steady_clock::now()),
+    : config_(std::move(config)),
+      audio_guide_(config_.audio_config),
       last_microsleep_cue_time_(std::chrono::steady_clock::now() - std::chrono::seconds(10)),
       last_perclos_cue_time_(std::chrono::steady_clock::now() - std::chrono::seconds(10)) {}
 
-bool EarDetector::start_calibration(std::chrono::steady_clock::time_point now) {
-    if (phase_ != CalibrationPhase::Pending && phase_ != CalibrationPhase::Completed) {
+EarDetector::~EarDetector() {
+    reset();
+}
+
+bool EarDetector::start_calibration(std::chrono::steady_clock::time_point /*now*/) {
+    if (audio_guide_.is_active()) {
         std::cout << "[EarDetector] Calibration is already in progress.\n";
         return false;
     }
 
-    phase_ = CalibrationPhase::CalibOpen;
-    phase_start_ = now;
-    open_samples_.clear();
-    closed_samples_.clear();
+    {
+        std::lock_guard<std::mutex> lock(sample_mutex_);
+        open_samples_.clear();
+        closed_samples_.clear();
+    }
     buffer_raw_.clear();
     buffer_median_.clear();
     perclos_buffer_.clear();
     in_blink_cycle_ = false;
     microsleep_alarm_active_ = false;
 
-    std::cout << "\n[+] EarDetector: Started Phase 1: Calibrating Open Eyes (~"
-              << config_.phase_duration.count() << "s). Look forward with eyes comfortably open.\n";
-    return true;
+    return audio_guide_.start(
+        [this](CalibrationPhase /*new_phase*/) {
+            // State transitioned by audio guide
+        },
+        [this]() {
+            // Callback invoked prior to success chime
+            compute_calibrated_thresholds();
+            perclos_start_time_ = std::chrono::steady_clock::now();
+        }
+    );
 }
 
 void EarDetector::reset() {
-    phase_ = CalibrationPhase::Pending;
-    open_samples_.clear();
-    closed_samples_.clear();
+    audio_guide_.stop();
+
+    {
+        std::lock_guard<std::mutex> lock(sample_mutex_);
+        open_samples_.clear();
+        closed_samples_.clear();
+    }
     buffer_raw_.clear();
     buffer_median_.clear();
     perclos_buffer_.clear();
@@ -78,39 +97,8 @@ double EarDetector::calculate_single_eye_ear(
     return (dist_a + dist_b) / (2.0 * dist_c);
 }
 
-void EarDetector::update_calibration_fsm(double ear_raw, std::chrono::steady_clock::time_point now) {
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - phase_start_);
-
-    if (phase_ == CalibrationPhase::CalibOpen) {
-        if (ear_raw > 0.0) {
-            open_samples_.push_back(ear_raw);
-        }
-        if (elapsed >= config_.phase_duration) {
-            phase_ = CalibrationPhase::Transition;
-            phase_start_ = now;
-            std::cout << "\n[+] EarDetector: Phase 1 complete. TRANSITION: CLOSE EYES NOW AND HOLD (~"
-                      << config_.transition_duration.count() << "s)...\n";
-        }
-    } else if (phase_ == CalibrationPhase::Transition) {
-        if (elapsed >= config_.transition_duration) {
-            phase_ = CalibrationPhase::CalibClosed;
-            phase_start_ = now;
-            std::cout << "\n[+] EarDetector: Started Phase 2: Calibrating Closed Eyes (~"
-                      << config_.phase_duration.count() << "s). Keep eyes gently closed.\n";
-        }
-    } else if (phase_ == CalibrationPhase::CalibClosed) {
-        if (ear_raw > 0.0) {
-            closed_samples_.push_back(ear_raw);
-        }
-        if (elapsed >= config_.phase_duration) {
-            compute_calibrated_thresholds();
-            phase_ = CalibrationPhase::Completed;
-            perclos_start_time_ = now;
-        }
-    }
-}
-
 void EarDetector::compute_calibrated_thresholds() {
+    std::lock_guard<std::mutex> lock(sample_mutex_);
     ear_base_open_ = open_samples_.empty() ? 0.30 : compute_mean(open_samples_);
     ear_base_closed_ = closed_samples_.empty() ? 0.15 : compute_mean(closed_samples_);
 
@@ -129,11 +117,13 @@ void EarDetector::compute_calibrated_thresholds() {
 
     std::cout << "\n=======================================================\n"
               << "[+] EarDetector: Calibration Complete!\n"
-              << "    Open Baseline    : " << std::fixed << std::setprecision(3) << ear_base_open_ << "\n"
-              << "    Closed Floor     : " << ear_base_closed_ << "\n"
+              << "    Open Baseline    : " << std::fixed << std::setprecision(3) << ear_base_open_
+              << " (" << open_samples_.size() << " samples)\n"
+              << "    Closed Floor     : " << ear_base_closed_
+              << " (" << closed_samples_.size() << " samples)\n"
               << "    Descent Thresh   : " << thresh_descent_ << " (70% aperture)\n"
               << "    Closure Thresh   : " << thresh_closure_ << " (20% aperture)\n"
-              << "=======================================================\n";
+              << "=======================================================\n" << std::flush;
 }
 
 EarAssessment EarDetector::process(
@@ -154,10 +144,16 @@ EarAssessment EarDetector::process(
     double ear_raw = (ear_r + ear_l) * 0.5;
     std::vector<CueEvent> cues;
 
-    // 2. If calibration is active, advance state machine
-    if (phase_ != CalibrationPhase::Completed) {
-        if (phase_ != CalibrationPhase::Pending) {
-            update_calibration_fsm(ear_raw, now);
+    CalibrationPhase current_phase = audio_guide_.phase();
+
+    // 2. If calibration is active, sample accumulation occurs during active measurement windows
+    if (current_phase != CalibrationPhase::Completed) {
+        if (audio_guide_.is_measuring_open() && ear_raw > 0.0) {
+            std::lock_guard<std::mutex> lock(sample_mutex_);
+            open_samples_.push_back(ear_raw);
+        } else if (audio_guide_.is_measuring_closed() && ear_raw > 0.0) {
+            std::lock_guard<std::mutex> lock(sample_mutex_);
+            closed_samples_.push_back(ear_raw);
         }
 
         return EarAssessment{
@@ -167,7 +163,7 @@ EarAssessment EarDetector::process(
             0.0,
             0.0,
             false,
-            phase_,
+            current_phase,
             cues
         };
     }
@@ -182,7 +178,6 @@ EarAssessment EarDetector::process(
         if (buffer_raw_.size() == config_.median_window) {
             std::vector<double> raw_vec(buffer_raw_.begin(), buffer_raw_.end());
             double ear_med = compute_median(raw_vec);
-
             buffer_median_.push_back(ear_med);
             if (buffer_median_.size() > config_.mov_avg_window) {
                 buffer_median_.pop_front();
@@ -193,8 +188,8 @@ EarAssessment EarDetector::process(
                 current_ear_open_ = compute_mean(med_vec);
 
                 double dynamic_range = std::max(config_.min_dynamic_range, current_ear_open_ - ear_base_closed_);
-                thresh_closure_ = ear_base_closed_ + (config_.sensibilidad_cierre * dynamic_range);
                 thresh_descent_ = ear_base_closed_ + (config_.factor_descenso * dynamic_range);
+                thresh_closure_ = ear_base_closed_ + (config_.sensibilidad_cierre * dynamic_range);
             }
         }
     }
@@ -259,46 +254,45 @@ EarAssessment EarDetector::process(
         }
     }
 
-    // 5. Rolling 30-Second PERCLOS Tracker
-    int is_closed = (ear_raw <= thresh_closure_) ? 1 : 0;
-    perclos_buffer_.emplace_back(now, is_closed);
+    // 5. True Rolling 30-Second PERCLOS Tracking
+    int is_closed_sample = (ear_raw <= thresh_closure_) ? 1 : 0;
+    perclos_buffer_.push_back({now, is_closed_sample});
 
-    // Evict samples older than 30s
-    auto cutoff = now - config_.perclos_window;
-    while (!perclos_buffer_.empty() && perclos_buffer_.front().first < cutoff) {
+    // Prune samples older than perclos_window (default 30 seconds)
+    auto perclos_cutoff = now - config_.perclos_window;
+    while (!perclos_buffer_.empty() && perclos_buffer_.front().first < perclos_cutoff) {
         perclos_buffer_.pop_front();
     }
 
-    auto warmup_elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - perclos_start_time_);
-    if (warmup_elapsed >= config_.perclos_window && !perclos_buffer_.empty()) {
-        int closed_count = 0;
-        for (const auto& sample : perclos_buffer_) {
-            closed_count += sample.second;
+    auto perclos_monitoring_time = std::chrono::duration_cast<std::chrono::seconds>(now - perclos_start_time_);
+    bool perclos_warmed_up = perclos_monitoring_time >= config_.perclos_window;
+
+    if (perclos_warmed_up && !perclos_buffer_.empty()) {
+        size_t closed_count = 0;
+        for (const auto& entry : perclos_buffer_) {
+            if (entry.second == 1) {
+                closed_count++;
+            }
         }
         perclos_pct_ = (static_cast<double>(closed_count) / static_cast<double>(perclos_buffer_.size())) * 100.0;
 
-        // Rate-limit PERCLOS cue emission to at most once every 5 seconds
-        auto time_since_last_perclos = std::chrono::duration<double>(now - last_perclos_cue_time_).count();
-        if (time_since_last_perclos >= 5.0) {
+        auto elapsed_since_cue = std::chrono::duration_cast<std::chrono::seconds>(now - last_perclos_cue_time_);
+        if (elapsed_since_cue >= std::chrono::seconds(5)) {
             if (perclos_pct_ >= config_.perclos_high_thresh) {
                 last_perclos_cue_time_ = now;
-                std::stringstream ss;
-                ss << std::fixed << std::setprecision(1) << perclos_pct_;
                 cues.push_back(CueEvent{
                     CueType::Perclos,
                     CueStrength::Strong,
                     now,
-                    "High PERCLOS: " + ss.str() + "% eye closure over 30s (>= 15%)"
+                    "High PERCLOS: " + std::to_string(static_cast<int>(perclos_pct_)) + "% (>= 15%)"
                 });
             } else if (perclos_pct_ >= config_.perclos_medium_thresh) {
                 last_perclos_cue_time_ = now;
-                std::stringstream ss;
-                ss << std::fixed << std::setprecision(1) << perclos_pct_;
                 cues.push_back(CueEvent{
                     CueType::Perclos,
                     CueStrength::Light,
                     now,
-                    "Medium PERCLOS: " + ss.str() + "% eye closure over 30s (7.5% - 15%)"
+                    "Medium PERCLOS: " + std::to_string(static_cast<int>(perclos_pct_)) + "% (7.5% - 15%)"
                 });
             }
         }
@@ -313,7 +307,7 @@ EarAssessment EarDetector::process(
         perclos_pct_,
         last_blink_duration_ms_,
         in_blink_cycle_,
-        phase_,
+        CalibrationPhase::Completed,
         cues
     };
 }

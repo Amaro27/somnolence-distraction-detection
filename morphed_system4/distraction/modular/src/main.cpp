@@ -174,15 +174,15 @@ int main(int argc, char** argv) {
 
             // In-flight locking: Prevent re-triggering while calibration is already in progress
             CalibrationPhase phase = ear_detector.phase();
-            if (phase == CalibrationPhase::CalibOpen || phase == CalibrationPhase::Transition || phase == CalibrationPhase::CalibClosed) {
+            if (phase != CalibrationPhase::Pending && phase != CalibrationPhase::Completed) {
                 std::cout << "\n[CALIBRATION] Ignored: Calibration already in progress.\n" << std::flush;
                 return;
             }
 
             std::cout << "\n[CALIBRATION] Starting coordinated calibration sequence...\n"
-                      << "             Phase 1: Neutral Head Pose + Open Eyes (~4s). Look forward at the road.\n" << std::flush;
-            ear_detector.start_calibration();
+                      << "             Follow acoustic guidance instructions.\n" << std::flush;
             head_detector.start_calibration();
+            ear_detector.start_calibration();
         },
         [&mailbox_gaze, &mailbox_somno]() {
             std::cout << "\n[*] Quit requested via console. Initiating clean shutdown...\n" << std::flush;
@@ -272,8 +272,8 @@ int main(int argc, char** argv) {
 
                 const auto& landmarks = landmarks_opt.value();
 
-                // Calibration lifecycle coordination
-                if (phase == CalibrationPhase::CalibOpen) {
+                // Calibration lifecycle coordination: accumulate neutral head pose during active measurement
+                if (ear_detector.is_measuring_open()) {
                     head_detector.accumulate_calibration(landmarks);
                 }
 

@@ -1,9 +1,11 @@
 #pragma once
 
+#include "CalibrationAudioGuide.hpp"
 #include "Types.hpp"
 
 #include <chrono>
 #include <deque>
+#include <mutex>
 #include <vector>
 
 /**
@@ -11,7 +13,7 @@
  *
  * Implements:
  * 1. Geometric 6-point EAR calculation for left and right eyes.
- * 2. Two-phase physiological calibration (Open Eyes ~4s, Transition ~2s, Closed Eyes ~4s).
+ * 2. Two-phase physiological calibration coordinated with acoustic guidance feedback.
  * 3. Cascaded adaptive filtering (median filter + moving average baseline drift).
  * 4. Micro-sleep detection (>500ms eye closure) emitting Strong cues.
  * 5. Rolling 30-second PERCLOS tracking:
@@ -21,9 +23,14 @@
 class EarDetector {
 public:
     explicit EarDetector(EarConfig config = EarConfig{});
+    ~EarDetector();
+
+    // Non-copyable, non-movable
+    EarDetector(const EarDetector&) = delete;
+    EarDetector& operator=(const EarDetector&) = delete;
 
     /**
-     * @brief Initiates two-phase calibration sequence.
+     * @brief Initiates two-phase calibration sequence with acoustic guidance.
      * Transitions state from Pending to CalibOpen.
      * @return true if calibration successfully started, false if already in progress.
      */
@@ -46,8 +53,12 @@ public:
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
     );
 
-    CalibrationPhase phase() const { return phase_; }
-    bool is_calibrated() const { return phase_ == CalibrationPhase::Completed; }
+    CalibrationPhase phase() const { return audio_guide_.phase(); }
+    bool is_calibrated() const { return audio_guide_.phase() == CalibrationPhase::Completed; }
+    bool is_measuring_open() const { return audio_guide_.is_measuring_open(); }
+    bool is_measuring_closed() const { return audio_guide_.is_measuring_closed(); }
+    bool is_measuring() const { return audio_guide_.is_measuring(); }
+
     const EarConfig& config() const { return config_; }
 
 private:
@@ -55,12 +66,11 @@ private:
                                     const cv::Point2f& p2, const cv::Point2f& p3,
                                     const cv::Point2f& p4, const cv::Point2f& p5) const;
 
-    void update_calibration_fsm(double ear_raw, std::chrono::steady_clock::time_point now);
     void compute_calibrated_thresholds();
 
     EarConfig config_;
-    CalibrationPhase phase_{CalibrationPhase::Pending};
-    std::chrono::steady_clock::time_point phase_start_;
+    CalibrationAudioGuide audio_guide_;
+    mutable std::mutex sample_mutex_;
 
     // Calibration accumulator buffers
     std::vector<double> open_samples_;
