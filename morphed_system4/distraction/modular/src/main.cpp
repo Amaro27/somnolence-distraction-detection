@@ -1,4 +1,6 @@
 #include "AlertManager.hpp"
+#include "AudioManager.hpp"
+#include "Calibration.hpp"
 #include "CameraCapture.hpp"
 #include "ConsoleController.hpp"
 #include "EarDetector.hpp"
@@ -37,7 +39,7 @@ int main(int argc, char** argv) {
     int window_ms = 2000;
     size_t seq_len_val = 20;
     ThresholdEvaluationPolicy policy = ThresholdEvaluationPolicy::BinarizeThreshold;
-    VehicleMovementState initial_movement = VehicleMovementState::Moving;
+    VehicleMovementState initial_movement = VehicleMovementState::Stationary;
 
     // Parse command line arguments
     for (int i = 1; i < argc; ++i) {
@@ -63,6 +65,8 @@ int main(int argc, char** argv) {
             } else {
                 policy = ThresholdEvaluationPolicy::BinarizeThreshold;
             }
+        } else if (arg == "--moving") {
+            initial_movement = VehicleMovementState::Moving;
         } else if (arg == "--stationary") {
             initial_movement = VehicleMovementState::Stationary;
         } else if (arg == "--help" || arg == "-h") {
@@ -76,7 +80,7 @@ int main(int argc, char** argv) {
                       << "  --window-ms <2000>      Sliding mode evaluation duration in ms (default: 2000)\n"
                       << "  --seq-len <20>          LSTM sequence memory window in frames (default: 20)\n"
                       << "  --policy <binarize|filter> Threshold policy (default: binarize)\n"
-                      << "  --stationary            Start in stationary state (detections paused)\n"
+                      << "  --moving                Start in moving state (default: stationary)\n"
                       << "  --help, -h              Display this help message\n";
             return 0;
         }
@@ -130,7 +134,7 @@ int main(int argc, char** argv) {
     EarDetector ear_detector;
     MarDetector mar_detector;
 
-    // 5. Unified Thread-Safe AlertManager
+    // 5. Unified AudioManager & Thread-Safe AlertManager
     AlertConfig alert_config;
     alert_config.min_confidence = ConfidenceThreshold(conf_threshold_val);
     alert_config.distraction_window = DetectionWindowDuration(std::chrono::milliseconds(window_ms));
@@ -140,32 +144,37 @@ int main(int argc, char** argv) {
     alert_config.audio_config.min_volume = 0.3f;
     alert_config.audio_config.max_volume = 1.0f;
 
-    AlertManager alert_manager(alert_config);
+    AudioManager audio_manager(alert_config.audio_config);
+    AlertManager alert_manager(alert_config, audio_manager);
 
-    // 6. Shared Vehicle Movement State (Atomic)
+    // 6. Shared Coordination & Calibration State (Atomics)
     std::atomic<VehicleMovementState> vehicle_state{initial_movement};
+    std::atomic<bool> system_calibrated{false};
+    std::atomic<bool> calibration_requested{false};
+    std::atomic<bool> calibrating{false};
+    CalibrationAudioConfig calib_audio_config;
 
     // 7. Interactive Non-Blocking Console Controller ('m', 'c', 'q')
     ConsoleController console(
-        [&vehicle_state, &alert_manager, &gaze_detector, &ear_detector, &head_detector]() {
+        [&vehicle_state, &alert_manager, &gaze_detector, &system_calibrated, &calibrating, &calibration_requested]() {
+            if (calibrating.load() || calibration_requested.load()) {
+                std::cout << "\n[VEHICLE] Ignored: Cannot change movement state while calibration is in progress.\n" << std::flush;
+                return;
+            }
             if (vehicle_state.load() == VehicleMovementState::Moving) {
                 vehicle_state.store(VehicleMovementState::Stationary);
                 alert_manager.reset();
                 gaze_detector.reset();
-                std::cout << "\n[VEHICLE] State changed: STATIONARY (Distraction inference paused)\n" << std::flush;
+                std::cout << "\n[VEHICLE] State changed: STATIONARY (Detections paused)\n" << std::flush;
             } else {
                 vehicle_state.store(VehicleMovementState::Moving);
-                // Safeguard: If vehicle starts moving during calibration, abort to Pending
-                CalibrationPhase current_phase = ear_detector.phase();
-                if (current_phase != CalibrationPhase::Pending && current_phase != CalibrationPhase::Completed) {
-                    ear_detector.reset();
-                    head_detector.reset();
-                    std::cout << "\n[CALIBRATION] Aborted: Vehicle started moving during calibration. Reverted to Pending.\n" << std::flush;
+                std::cout << "\n[VEHICLE] State changed: MOVING\n" << std::flush;
+                if (!system_calibrated.load()) {
+                    std::cout << "[!] Not calibrated: detections disabled. Stop ('m') and calibrate ('c').\n" << std::flush;
                 }
-                std::cout << "\n[VEHICLE] State changed: MOVING (Active monitoring enabled)\n" << std::flush;
             }
         },
-        [&vehicle_state, &ear_detector, &head_detector]() {
+        [&vehicle_state, &calibrating, &calibration_requested]() {
             // Stationary Gate: Calibration is only permitted while stationary
             if (vehicle_state.load() == VehicleMovementState::Moving) {
                 std::cout << "\n[CALIBRATION] Ignored: Calibration is only permitted while vehicle is stationary.\n" << std::flush;
@@ -173,20 +182,19 @@ int main(int argc, char** argv) {
             }
 
             // In-flight locking: Prevent re-triggering while calibration is already in progress
-            CalibrationPhase phase = ear_detector.phase();
-            if (phase != CalibrationPhase::Pending && phase != CalibrationPhase::Completed) {
+            if (calibrating.load() || calibration_requested.load()) {
                 std::cout << "\n[CALIBRATION] Ignored: Calibration already in progress.\n" << std::flush;
                 return;
             }
 
             std::cout << "\n[CALIBRATION] Starting coordinated calibration sequence...\n"
-                      << "             Follow acoustic guidance instructions.\n" << std::flush;
-            head_detector.start_calibration();
-            ear_detector.start_calibration();
+                      << "              Follow acoustic guidance instructions.\n" << std::flush;
+            calibration_requested.store(true);
         },
-        [&mailbox_gaze, &mailbox_somno]() {
+        [&audio_manager, &mailbox_gaze, &mailbox_somno]() {
             std::cout << "\n[*] Quit requested via console. Initiating clean shutdown...\n" << std::flush;
             g_shutdown_requested.store(true);
+            audio_manager.stop();
             mailbox_gaze->stop();
             mailbox_somno->stop();
         }
@@ -210,8 +218,8 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                // Skip gaze inference when stationary
-                if (vehicle_state.load() == VehicleMovementState::Stationary) {
+                // Skip gaze inference when stationary or uncalibrated
+                if (vehicle_state.load() == VehicleMovementState::Stationary || !system_calibrated.load()) {
                     continue;
                 }
 
@@ -239,6 +247,28 @@ int main(int argc, char** argv) {
             cv::Mat frame;
 
             while (!g_shutdown_requested.load()) {
+                if (calibration_requested.exchange(false)) {
+                    calibrating.store(true);
+                    CalibrationContext calib_ctx{
+                        *mailbox_somno,
+                        face_detector,
+                        audio_manager,
+                        g_shutdown_requested
+                    };
+                    auto result = run_calibration(calib_ctx, calib_audio_config);
+                    calibrating.store(false);
+                    if (result.has_value()) {
+                        auto now_calib = std::chrono::steady_clock::now();
+                        ear_detector.apply_baseline(result->ear_open, result->ear_closed, now_calib);
+                        head_detector.apply_baseline(result->neutral_rho);
+                        mar_detector.reset();
+                        face_detector.reset();
+                        system_calibrated.store(true);
+                        std::cout << "[+] System calibrated. Press 'm' to switch to MOVING and enable monitoring.\n" << std::flush;
+                    }
+                    continue;
+                }
+
                 bool got_frame = mailbox_somno->get_latest(frame, std::chrono::milliseconds(100));
                 if (!got_frame) {
                     if (mailbox_somno->is_stopped()) {
@@ -247,63 +277,35 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                auto now = std::chrono::steady_clock::now();
-                bool is_moving = (vehicle_state.load() == VehicleMovementState::Moving);
-                CalibrationPhase phase = ear_detector.phase();
-                bool is_calibrating = (phase != CalibrationPhase::Pending && phase != CalibrationPhase::Completed);
-
-                // Skip processing if vehicle is stationary AND not actively calibrating
-                if (!is_moving && !is_calibrating) {
+                // Skip all somnolence detections if stationary or uncalibrated
+                if (vehicle_state.load() != VehicleMovementState::Moving || !system_calibrated.load()) {
                     continue;
                 }
 
+                auto now = std::chrono::steady_clock::now();
+
                 // Single-pass Dlib 68-point landmark detection (zero bounding box caching)
                 auto landmarks_opt = face_detector.detect(frame, now);
-
                 if (!landmarks_opt.has_value()) {
-                    if (is_calibrating && face_detector.is_face_missing()) {
-                        // Face missing during calibration aborts back to Pending
-                        ear_detector.reset();
-                        head_detector.reset();
-                        std::cout << "\n[CALIBRATION] Aborted: Driver face lost during calibration. Reverted to Pending.\n" << std::flush;
-                    }
                     continue;
                 }
 
                 const auto& landmarks = landmarks_opt.value();
 
-                // Calibration lifecycle coordination: accumulate neutral head pose during active measurement
-                if (ear_detector.is_measuring_open()) {
-                    head_detector.accumulate_calibration(landmarks);
-                }
-
-                // Process EAR detector (advances calibration FSM or monitors blinks/PERCLOS)
+                // Process EAR, Head Orientation, and Mouth Aspect Ratio
                 EarAssessment ear_res = ear_detector.process(landmarks, now);
-
-                // Transition checkpoint: finalize head neutral baseline when moving into transition
-                if (ear_detector.phase() == CalibrationPhase::Transition && !head_detector.is_calibrated()) {
-                    head_detector.finalize_calibration();
-                }
-
-                // Process Head Orientation (pitch droop)
-                HeadOrientationAssessment head_res = head_detector.process(landmarks, ear_detector.phase(), now);
-
-                // Process Mouth Aspect Ratio (yawn)
+                HeadOrientationAssessment head_res = head_detector.process(landmarks, now);
                 MarAssessment mar_res = mar_detector.process(landmarks, now);
 
-                // Active Fatigue Alert Evaluation when vehicle is moving
-                if (is_moving) {
-                    if (ear_detector.is_calibrated()) {
-                        for (const auto& cue : ear_res.cues) {
-                            alert_manager.register_cue(cue.type, cue.strength, cue.details);
-                        }
-                        if (head_res.cue.has_value()) {
-                            alert_manager.register_cue(head_res.cue->type, head_res.cue->strength, head_res.cue->details);
-                        }
-                    }
-                    if (mar_res.cue.has_value()) {
-                        alert_manager.register_cue(mar_res.cue->type, mar_res.cue->strength, mar_res.cue->details);
-                    }
+                // Register fatigue cues (all gated on system_calibrated && Moving)
+                for (const auto& cue : ear_res.cues) {
+                    alert_manager.register_cue(cue.type, cue.strength, cue.details);
+                }
+                if (head_res.cue.has_value()) {
+                    alert_manager.register_cue(head_res.cue->type, head_res.cue->strength, head_res.cue->details);
+                }
+                if (mar_res.cue.has_value()) {
+                    alert_manager.register_cue(mar_res.cue->type, mar_res.cue->strength, mar_res.cue->details);
                 }
             }
         } catch (const std::exception& e) {
@@ -344,6 +346,7 @@ int main(int argc, char** argv) {
 
     std::cout << "[*] Stopping pipeline components...\n" << std::flush;
     g_shutdown_requested.store(true);
+    audio_manager.stop();
     capture.stop();
     mailbox_gaze->stop();
     mailbox_somno->stop();

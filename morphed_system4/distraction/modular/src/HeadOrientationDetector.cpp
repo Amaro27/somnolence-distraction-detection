@@ -1,6 +1,5 @@
 #include "HeadOrientationDetector.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <opencv2/core.hpp>
@@ -9,42 +8,22 @@ HeadOrientationDetector::HeadOrientationDetector(HeadOrientationConfig config)
     : config_(config),
       droop_start_time_(std::chrono::steady_clock::now()) {}
 
-void HeadOrientationDetector::start_calibration() {
-    calib_rho_buf_.clear();
-    calibrated_ = false;
-    in_droop_ = false;
-    std::cout << "[HeadOrientationDetector] Started neutral orientation calibration accumulation.\n";
-}
-
-void HeadOrientationDetector::accumulate_calibration(const FacialLandmarks68& landmarks) {
-    double rho = compute_rho(landmarks);
-    if (rho > 0.0) {
-        calib_rho_buf_.push_back(rho);
-    }
-}
-
-void HeadOrientationDetector::finalize_calibration() {
-    if (calib_rho_buf_.empty()) {
-        baseline_rho_ = 0.50; // Fallback neutral proportion
-    } else {
-        std::sort(calib_rho_buf_.begin(), calib_rho_buf_.end());
-        size_t n = calib_rho_buf_.size();
-        baseline_rho_ = (n % 2 == 1) ? calib_rho_buf_[n / 2]
-                                     : (calib_rho_buf_[n / 2 - 1] + calib_rho_buf_[n / 2]) * 0.5;
-    }
+void HeadOrientationDetector::apply_baseline(double neutral_rho) {
+    baseline_rho_ = (neutral_rho > 0.0) ? neutral_rho : 0.50;
     calibrated_ = true;
+    in_droop_ = false;
+    droop_cue_emitted_ = false;
     std::cout << "[HeadOrientationDetector] Calibration complete. Baseline rho: " << baseline_rho_ << "\n";
 }
 
 void HeadOrientationDetector::reset() {
-    calib_rho_buf_.clear();
     baseline_rho_ = 0.0;
     calibrated_ = false;
     in_droop_ = false;
     droop_cue_emitted_ = false;
 }
 
-double HeadOrientationDetector::compute_rho(const FacialLandmarks68& landmarks) const {
+double HeadOrientationDetector::compute_rho(const FacialLandmarks68& landmarks) {
     cv::Point2d p36(landmarks[36].x, landmarks[36].y);
     cv::Point2d p45(landmarks[45].x, landmarks[45].y);
 
@@ -75,14 +54,13 @@ double HeadOrientationDetector::compute_rho(const FacialLandmarks68& landmarks) 
 
 HeadOrientationAssessment HeadOrientationDetector::process(
     const FacialLandmarks68& landmarks,
-    CalibrationPhase current_phase,
     std::chrono::steady_clock::time_point now
 ) {
     double rho = compute_rho(landmarks);
     double pitch_deg = 0.0;
     std::optional<CueEvent> cue = std::nullopt;
 
-    if (current_phase == CalibrationPhase::Completed && calibrated_) {
+    if (calibrated_) {
         double delta_rho = rho - baseline_rho_;
         pitch_deg = std::atan2(-delta_rho, config_.kp_pitch) * (180.0 / CV_PI);
 
@@ -116,7 +94,6 @@ HeadOrientationAssessment HeadOrientationDetector::process(
     return HeadOrientationAssessment{
         pitch_deg,
         rho,
-        current_phase,
         cue
     };
 }

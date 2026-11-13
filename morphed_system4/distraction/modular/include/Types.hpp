@@ -78,17 +78,6 @@ enum class ThresholdEvaluationPolicy {
     FilterUncertain
 };
 
-/**
- * @brief Coordinated physiological calibration phase state machine.
- */
-enum class CalibrationPhase {
-    Pending,      // Uncalibrated / awaiting user trigger while stationary
-    CalibOpen,    // Phase 1: Neutral head orientation + open eyes (~4s)
-    Transition,   // User prompt to close eyes (~2s)
-    CalibClosed,  // Phase 2: Closed eyes floor (~4s)
-    Completed     // Calibration complete, active monitoring
-};
-
 // ── 2. Explicit Strongly-Typed Wrappers & Aliases ────────────────────────────
 
 using FacialLandmarks68 = std::array<cv::Point2f, 68>;
@@ -179,7 +168,6 @@ struct DistractionDetectionResult {
 struct HeadOrientationAssessment {
     double pitch_deg{0.0};
     double rho{0.0};
-    CalibrationPhase phase{CalibrationPhase::Pending};
     std::optional<CueEvent> cue; // Light: Droop (pitch <= -20 deg for >= 1.5s)
 };
 
@@ -193,7 +181,6 @@ struct EarAssessment {
     double perclos_pct{0.0};
     double last_blink_duration_ms{0.0};
     bool in_blink_cycle{false};
-    CalibrationPhase phase{CalibrationPhase::Pending};
     std::vector<CueEvent> cues;
 };
 
@@ -227,6 +214,8 @@ struct AuditoryAlertConfig {
     double repetition_rate_hz{1.0}; // Pulses per second
     float min_volume{0.2f};
     float max_volume{1.0f};
+    std::string medium_risk_sound_path{"input/sounds/single-beep-350-hz.wav"};
+    std::string high_risk_sound_path{"input/sounds/Ring06-LOUD.wav"};
 };
 
 /**
@@ -260,7 +249,7 @@ struct HeadOrientationConfig {
 /**
  * @brief Configuration parameters for calibration acoustic guidance feedback.
  *
- * Sound file paths can be modified here or overridden in EarConfig.audio_config.
+ * Sound file paths can be modified here or overridden programmatically.
  */
 struct CalibrationAudioConfig {
     std::string phase1_instructions_path{"input/sounds/calib_phase_1.wav"};
@@ -273,14 +262,13 @@ struct CalibrationAudioConfig {
     std::chrono::milliseconds beep_interval{500};         // 500 ms between cadence beeps
     size_t num_beeps{8};                                  // 8 beeps total (8 * 500ms = 4.0s active measurement)
     std::chrono::milliseconds transition_silence{1000};   // 1.0s silence during transition
+    size_t min_samples_per_window{15};                    // Minimum valid landmark samples required per window
 };
 
 /**
  * @brief Configuration parameters for Eye Aspect Ratio (EAR), blink, and PERCLOS.
  */
 struct EarConfig {
-    std::chrono::seconds phase_duration{4};       // 4s active measurement
-    std::chrono::seconds transition_duration{2};  // 2s transition pause
     double factor_descenso{0.70};
     double sensibilidad_cierre{0.20};
     double min_dynamic_range{0.05};
@@ -291,7 +279,6 @@ struct EarConfig {
     std::chrono::seconds perclos_window{30};
     double perclos_medium_thresh{7.5};
     double perclos_high_thresh{15.0};
-    CalibrationAudioConfig audio_config;
 };
 
 /**

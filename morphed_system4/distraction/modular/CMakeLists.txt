@@ -37,8 +37,9 @@ set(MODULAR_DISTRACTION_SOURCES
     src/HeadOrientationDetector.cpp
     src/EarDetector.cpp
     src/MarDetector.cpp
+    src/AudioManager.cpp
+    src/Calibration.cpp
     src/SoundPlayer.cpp
-    src/CalibrationAudioGuide.cpp
     src/main.cpp
 )
 

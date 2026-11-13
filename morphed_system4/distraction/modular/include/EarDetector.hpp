@@ -1,11 +1,9 @@
 #pragma once
 
-#include "CalibrationAudioGuide.hpp"
 #include "Types.hpp"
 
 #include <chrono>
 #include <deque>
-#include <mutex>
 #include <vector>
 
 /**
@@ -13,7 +11,7 @@
  *
  * Implements:
  * 1. Geometric 6-point EAR calculation for left and right eyes.
- * 2. Two-phase physiological calibration coordinated with acoustic guidance feedback.
+ * 2. Baseline threshold application (70% descent, 20% closure) from calibration.
  * 3. Cascaded adaptive filtering (median filter + moving average baseline drift).
  * 4. Micro-sleep detection (>500ms eye closure) emitting Strong cues.
  * 5. Rolling 30-second PERCLOS tracking:
@@ -23,27 +21,35 @@
 class EarDetector {
 public:
     explicit EarDetector(EarConfig config = EarConfig{});
-    ~EarDetector();
+    ~EarDetector() = default;
 
     // Non-copyable, non-movable
     EarDetector(const EarDetector&) = delete;
     EarDetector& operator=(const EarDetector&) = delete;
 
     /**
-     * @brief Initiates two-phase calibration sequence with acoustic guidance.
-     * Transitions state from Pending to CalibOpen.
-     * @return true if calibration successfully started, false if already in progress.
+     * @brief Computes geometric 6-point average EAR (left + right eyes) from 68 landmarks.
      */
-    bool start_calibration(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    static double compute_ear(const FacialLandmarks68& landmarks);
 
     /**
-     * @brief Resets calibration state machine and all fatigue tracking buffers.
+     * @brief Applies calibrated open-eye and closed-eye EAR baselines and computes
+     * dynamic descent (70%) and closure (20%) thresholds.
+     */
+    void apply_baseline(
+        double ear_open,
+        double ear_closed,
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+    );
+
+    /**
+     * @brief Resets calibration status and all fatigue tracking buffers.
      */
     void reset();
 
     /**
      * @brief Processes facial landmarks for the current frame.
-     * Advances calibration FSM or performs active cascaded filtering and fatigue evaluation.
+     * Performs active cascaded filtering and fatigue evaluation once calibrated.
      * @param landmarks 68 extracted facial landmarks.
      * @param now Timestamp of the current frame.
      * @return EarAssessment containing smoothed EAR, PERCLOS %, blink metrics, and cue events.
@@ -53,28 +59,18 @@ public:
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
     );
 
-    CalibrationPhase phase() const { return audio_guide_.phase(); }
-    bool is_calibrated() const { return audio_guide_.phase() == CalibrationPhase::Completed; }
-    bool is_measuring_open() const { return audio_guide_.is_measuring_open(); }
-    bool is_measuring_closed() const { return audio_guide_.is_measuring_closed(); }
-    bool is_measuring() const { return audio_guide_.is_measuring(); }
-
+    bool is_calibrated() const { return calibrated_; }
     const EarConfig& config() const { return config_; }
 
 private:
-    double calculate_single_eye_ear(const cv::Point2f& p0, const cv::Point2f& p1,
-                                    const cv::Point2f& p2, const cv::Point2f& p3,
-                                    const cv::Point2f& p4, const cv::Point2f& p5) const;
-
-    void compute_calibrated_thresholds();
+    static double calculate_single_eye_ear(const cv::Point2f& p0, const cv::Point2f& p1,
+                                           const cv::Point2f& p2, const cv::Point2f& p3,
+                                           const cv::Point2f& p4, const cv::Point2f& p5);
 
     EarConfig config_;
-    CalibrationAudioGuide audio_guide_;
-    mutable std::mutex sample_mutex_;
+    bool calibrated_{false};
 
-    // Calibration accumulator buffers
-    std::vector<double> open_samples_;
-    std::vector<double> closed_samples_;
+    // Baseline and dynamic thresholds
     double ear_base_open_{0.30};
     double ear_base_closed_{0.15};
     double thresh_descent_{0.25};

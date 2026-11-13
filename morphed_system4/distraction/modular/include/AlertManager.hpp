@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AudioManager.hpp"
 #include "Types.hpp"
 
 #include <chrono>
@@ -20,9 +21,9 @@
 class AlertManager {
 public:
     /**
-     * @brief Constructs AlertManager with specified alert thresholds and timing.
+     * @brief Constructs AlertManager with specified alert thresholds, timing, and audio manager.
      */
-    explicit AlertManager(AlertConfig config = AlertConfig{});
+    AlertManager(AlertConfig config, AudioManager& audio);
 
     /**
      * @brief Pushes a new frame gaze classification into the 2.0-second sliding window.
@@ -63,6 +64,7 @@ private:
 
     mutable std::mutex mutex_;
     AlertConfig config_;
+    AudioManager& audio_;
     DriverState current_state_{DriverState::Safe};
     RiskLevel current_risk_{RiskLevel::None};
 

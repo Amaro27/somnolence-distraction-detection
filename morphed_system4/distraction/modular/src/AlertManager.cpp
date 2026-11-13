@@ -27,8 +27,9 @@ const char* cue_type_to_string(CueType type) {
 }
 } // namespace
 
-AlertManager::AlertManager(AlertConfig config)
-    : config_(config),
+AlertManager::AlertManager(AlertConfig config, AudioManager& audio)
+    : config_(std::move(config)),
+      audio_(audio),
       window_start_time_(std::chrono::steady_clock::now()),
       last_alert_sound_time_(std::chrono::steady_clock::now() - std::chrono::seconds(10)) {}
 
@@ -181,6 +182,7 @@ void AlertManager::emit_auditory_alert(RiskLevel risk, const std::string& reason
         std::cout << "[AUDITORY ALERT] Tone pulse emitted | Risk: " << risk_to_string(risk)
                   << " | Vol: " << std::fixed << std::setprecision(2) << volume
                   << " | Reason: " << reason << "\n";
+        audio_.play_alert(risk);
     }
 }
 

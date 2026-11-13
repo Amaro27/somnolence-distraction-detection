@@ -28,17 +28,14 @@ A high-performance, production-grade C++ implementation combining real-time spat
     - **Light Cues** (accumulate over a 2-minute sliding window): Medium PERCLOS ($7.5\% - 15.0\%$), Head Droop ($\le -20^\circ$ for $\ge 1.5\text{ s}$), and Sustained Yawn ($>4.0\text{ s}$).
     - **Trigger**: 1 Strong cue OR 2 Light cues within 2 minutes elevates driver state to `Drowsy` with `RiskLevel::High`.
 
-- **Coordinated Physiological Calibration State Machine**:
+- **Sequential Physiological Calibration Function (`run_calibration`)**:
+  - **Default Stationary Startup & Calibration Gate**: The system starts `Stationary` by default. Gaze distraction, EAR, head droop, and yawn (MAR) detections all remain paused until calibration has succeeded (`system_calibrated == true`) and vehicle state is `Moving`.
   - **Stationary Gate**: Calibration can **only** be initiated while `vehicle_state == Stationary`. Presses during movement are rejected.
-  - **In-Flight Lockout**: Repeated `'c'` keypresses while calibration is active are ignored.
-  - **Movement Interruption Safeguard**: If the vehicle starts `Moving` while calibration is in progress, the FSM immediately aborts calibration and reverts state to `Pending`.
-  - **Lost-Face Safeguard**: If the driver's face is lost during calibration, the FSM aborts and reverts to `Pending`.
-  - **Lifecycle**:
-    - `Pending`: Awaiting stationary user trigger.
-    - `CalibOpen` (~4s): Driver looks forward at the road with eyes open; accumulates open-eye EAR and neutral pitch ratio $\rho$.
-    - `Transition` (~2s): Prompt displayed to close eyes; head pose baseline $\rho$ is finalized.
-    - `CalibClosed` (~4s): Driver keeps eyes gently closed; accumulates closed-eye floor and calculates dynamic descent/closure thresholds.
-    - `Completed`: Both physiological modules transition to active monitoring.
+  - **In-Flight Lockout & Non-Aborting Sequence**: Repeated `'c'` and movement `'m'` keypresses while calibration is active are ignored/rejected. Missing-face frames are skipped, and any measurement window with insufficient face samples repeats its cadence beeps until `min_samples_per_window` (default 15) samples are collected. Only `'q'` / Ctrl+C exits early.
+  - **Single-Thread Execution**: Runs top-to-bottom on `somnolence_worker` (no separate calibration thread), returning an all-or-nothing `CalibrationResult` applied cleanly to `EarDetector` and `HeadOrientationDetector`.
+
+- **Unified Audio-Only `AudioManager`**:
+  - Centralizes all sound playback across `AlertManager` (distraction & drowsiness alerts) and `run_calibration()` (voice instructions, posture tone, cadence beeps, success chime) atop OS-guarded `SoundPlayer`.
 
 - **Interactive Console Controls**: Non-blocking keyboard controller for live testing:
   - `m` / `M`: Toggle vehicle movement state (`Stationary` <-> `Moving`).
@@ -62,10 +59,11 @@ morphed_system4/distraction/modular/
 │   └── sounds/                       # WAV audio files for calibration guidance
 ├── include/
 │   ├── AlertManager.hpp              # Thread-safe alert coordinator & multimodal cue fusion
-│   ├── CalibrationAudioGuide.hpp     # Multi-stage asynchronous calibration audio sequence manager
+│   ├── AudioManager.hpp              # Unified audio-only playback & alert sound dispatch
+│   ├── Calibration.hpp               # Sequential free-function calibration (run_calibration)
 │   ├── CameraCapture.hpp             # Background camera worker with multi-mailbox broadcast
 │   ├── ConsoleController.hpp         # Non-blocking interactive keyboard listener
-│   ├── EarDetector.hpp               # Eye Aspect Ratio, two-phase calibration, blinks & PERCLOS
+│   ├── EarDetector.hpp               # Eye Aspect Ratio, blinks & PERCLOS
 │   ├── FaceLandmarkDetector.hpp      # Single-pass Dlib 68-point landmark extractor
 │   ├── GazeDetector.hpp              # 2-stage ONNX inference engine (ResNet18 + LSTM)
 │   ├── HeadOrientationDetector.hpp   # Pitch droop estimation invariant to roll
@@ -76,7 +74,8 @@ morphed_system4/distraction/modular/
 │   └── Types.hpp                     # Strongly-typed wrappers, configs, DTOs, and domain enums
 └── src/
     ├── AlertManager.cpp
-    ├── CalibrationAudioGuide.cpp
+    ├── AudioManager.cpp
+    ├── Calibration.cpp
     ├── CameraCapture.cpp
     ├── ConsoleController.cpp
     ├── EarDetector.cpp
@@ -125,7 +124,7 @@ Options:
   --window-ms <2000>         Sliding mode evaluation duration in ms (default: 2000)
   --seq-len <20>             LSTM sequence memory window in frames (default: 20)
   --policy <binarize|filter> Threshold evaluation policy (default: binarize)
-  --stationary               Start in stationary state (detections paused)
+  --moving                   Start in moving state (default: stationary)
   --help, -h                 Display help message
 ```
 
@@ -141,11 +140,11 @@ Options:
 The system provides fully automated, eyes-free **acoustic guidance feedback** during physiological calibration when the vehicle is stationary.
 
 > [!NOTE]
-> **Separation of Concerns**: Calibration acoustic guidance tones are strictly instructional and feedback-oriented (`SoundPlayer` / `CalibrationAudioGuide`). They are completely separate and decoupled from the **auditory alerts** dispatched by `AlertManager` (which communicate distraction and drowsiness risk levels).
+> **Unified Audio Architecture**: All audio reproduction across the system routes through [`AudioManager`](file:///c:/Users/joabl/OneDrive/Documentos/GitHub/somnolence-distraction-detection-merges/morphed_system4/distraction/modular/include/AudioManager.hpp) and OS-guarded [`SoundPlayer`](file:///c:/Users/joabl/OneDrive/Documentos/GitHub/somnolence-distraction-detection-merges/morphed_system4/distraction/modular/include/SoundPlayer.hpp). `AudioManager` stays purely audio-focused, while [`run_calibration()`](file:///c:/Users/joabl/OneDrive/Documentos/GitHub/somnolence-distraction-detection-merges/morphed_system4/distraction/modular/include/Calibration.hpp) sequences the calibration steps on `somnolence_worker` without spawning extra threads.
 
 ### 5.1 Where to Change Sound Paths & Settings
 
-All sound paths and timing parameters are defined in [`include/Types.hpp`](file:///c:/Users/joabl/OneDrive/Documentos/GitHub/somnolence-distraction-detection-merges/morphed_system4/distraction/modular/include/Types.hpp) inside `struct CalibrationAudioConfig`:
+All sound paths and timing parameters are defined in [`include/Types.hpp`](file:///c:/Users/joabl/OneDrive/Documentos/GitHub/somnolence-distraction-detection-merges/morphed_system4/distraction/modular/include/Types.hpp) inside `struct CalibrationAudioConfig` (and alert paths inside `struct AuditoryAlertConfig`):
 
 ```cpp
 struct CalibrationAudioConfig {
@@ -156,18 +155,19 @@ struct CalibrationAudioConfig {
     std::string phase2_instructions_path{"input/sounds/calib_phase_2.wav"};
     std::string success_sound_path      {"input/sounds/tada-LOUD.wav"};
 
-    // Sequence timings:
+    // Sequence timings & sample minimum:
     std::chrono::milliseconds silence_gap{1000};          // Silence between speech/tone and beeps
     std::chrono::milliseconds beep_interval{500};         // 500 ms interval between cadence beeps
     size_t num_beeps{8};                                  // 8 beeps total (8 * 500ms = 4.0s active measurement)
     std::chrono::milliseconds transition_silence{1000};   // Silence during transition
+    size_t min_samples_per_window{15};                    // Minimum valid landmark samples per window
 };
 ```
 
 You can either:
 1. **Swap/Replace files directly** inside `morphed_system4/distraction/modular/input/sounds/`.
-2. **Change default paths** in [`include/Types.hpp`](file:///c:/Users/joabl/OneDrive/Documentos/GitHub/somnolence-distraction-detection-merges/morphed_system4/distraction/modular/include/Types.hpp) under `CalibrationAudioConfig`.
-3. **Override paths programmatically** in `main.cpp` by modifying `ear_config.audio_config.*` before instantiating `EarDetector`.
+2. **Change default paths** in [`include/Types.hpp`](file:///c:/Users/joabl/OneDrive/Documentos/GitHub/somnolence-distraction-detection-merges/morphed_system4/distraction/modular/include/Types.hpp) under `CalibrationAudioConfig` / `AuditoryAlertConfig`.
+3. **Override paths programmatically** in `main.cpp` by modifying `calib_audio_config.*` or `alert_config.audio_config.*` before execution.
 
 `SoundPlayer` automatically searches and resolves relative paths across the build directory (`input/sounds/...`), project directory (`morphed_system4/distraction/modular/input/sounds/...`), and repository root.
 
@@ -213,4 +213,4 @@ Sound playback is handled by [`SoundPlayer`](file:///c:/Users/joabl/OneDrive/Doc
   └── Transition to Completed (Active Driver Monitoring Enabled).
 ```
 
-If the vehicle begins moving, the driver's face is lost, or the user quits at **any** point during calibration, audio playback is stopped immediately and state is cleanly reverted to `Pending`.
+If the user quits (`'q'` / Ctrl+C) at any point during calibration, audio playback is stopped immediately via `AudioManager::stop()` and `run_calibration()` exits cleanly. Missing-face frames during measurement are skipped, and cadence beeps repeat automatically until at least `min_samples_per_window` valid samples are collected.
