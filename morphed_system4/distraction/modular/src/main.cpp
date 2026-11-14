@@ -147,49 +147,60 @@ int main(int argc, char** argv) {
     AudioManager audio_manager(alert_config.audio_config);
     AlertManager alert_manager(alert_config, audio_manager);
 
-    // 6. Shared Coordination & Calibration State (Atomics)
-    std::atomic<VehicleMovementState> vehicle_state{initial_movement};
-    std::atomic<bool> system_calibrated{false};
-    std::atomic<bool> calibration_requested{false};
-    std::atomic<bool> calibrating{false};
+    // 6. Shared System Coordination State (Single Atomic State Machine)
+    std::atomic<SystemState> system_state{
+        initial_movement == VehicleMovementState::Moving
+            ? SystemState::MovingUncalibrated
+            : SystemState::StationaryUncalibrated};
     CalibrationAudioConfig calib_audio_config;
 
     // 7. Interactive Non-Blocking Console Controller ('m', 'c', 'q')
     ConsoleController console(
-        [&vehicle_state, &alert_manager, &gaze_detector, &system_calibrated, &calibrating, &calibration_requested]() {
-            if (calibrating.load() || calibration_requested.load()) {
-                std::cout << "\n[VEHICLE] Ignored: Cannot change movement state while calibration is in progress.\n" << std::flush;
-                return;
-            }
-            if (vehicle_state.load() == VehicleMovementState::Moving) {
-                vehicle_state.store(VehicleMovementState::Stationary);
-                alert_manager.reset();
-                gaze_detector.reset();
-                std::cout << "\n[VEHICLE] State changed: STATIONARY (Detections paused)\n" << std::flush;
-            } else {
-                vehicle_state.store(VehicleMovementState::Moving);
-                std::cout << "\n[VEHICLE] State changed: MOVING\n" << std::flush;
-                if (!system_calibrated.load()) {
-                    std::cout << "[!] Not calibrated: detections disabled. Stop ('m') and calibrate ('c').\n" << std::flush;
-                }
+        [&system_state, &alert_manager, &gaze_detector]() {
+            switch (system_state.load()) {
+                case SystemState::Calibrating:
+                    std::cout << "\n[VEHICLE] Ignored: Cannot change movement state while calibration is in progress.\n" << std::flush;
+                    return;
+                case SystemState::MovingUncalibrated:
+                    system_state.store(SystemState::StationaryUncalibrated);
+                    alert_manager.reset();
+                    gaze_detector.reset();
+                    std::cout << "\n[VEHICLE] State changed: STATIONARY (Detections paused)\n" << std::flush;
+                    return;
+                case SystemState::MovingCalibrated:
+                    system_state.store(SystemState::StationaryCalibrated);
+                    alert_manager.reset();
+                    gaze_detector.reset();
+                    std::cout << "\n[VEHICLE] State changed: STATIONARY (Detections paused)\n" << std::flush;
+                    return;
+                case SystemState::StationaryUncalibrated:
+                    system_state.store(SystemState::MovingUncalibrated);
+                    std::cout << "\n[VEHICLE] State changed: MOVING\n"
+                              << "[!] Not calibrated: detections disabled. Stop ('m') and calibrate ('c').\n" << std::flush;
+                    return;
+                case SystemState::StationaryCalibrated:
+                    system_state.store(SystemState::MovingCalibrated);
+                    std::cout << "\n[VEHICLE] State changed: MOVING\n" << std::flush;
+                    return;
             }
         },
-        [&vehicle_state, &calibrating, &calibration_requested]() {
+        [&system_state]() {
+            const SystemState s = system_state.load();
             // Stationary Gate: Calibration is only permitted while stationary
-            if (vehicle_state.load() == VehicleMovementState::Moving) {
+            if (s == SystemState::MovingUncalibrated || s == SystemState::MovingCalibrated) {
                 std::cout << "\n[CALIBRATION] Ignored: Calibration is only permitted while vehicle is stationary.\n" << std::flush;
                 return;
             }
 
             // In-flight locking: Prevent re-triggering while calibration is already in progress
-            if (calibrating.load() || calibration_requested.load()) {
+            if (s == SystemState::Calibrating) {
                 std::cout << "\n[CALIBRATION] Ignored: Calibration already in progress.\n" << std::flush;
                 return;
             }
 
             std::cout << "\n[CALIBRATION] Starting coordinated calibration sequence...\n"
                       << "              Follow acoustic guidance instructions.\n" << std::flush;
-            calibration_requested.store(true);
+            system_state.store(SystemState::Calibrating);
         },
         [&audio_manager, &mailbox_gaze, &mailbox_somno]() {
             std::cout << "\n[*] Quit requested via console. Initiating clean shutdown...\n" << std::flush;
@@ -218,8 +229,8 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                // Skip gaze inference when stationary or uncalibrated
-                if (vehicle_state.load() == VehicleMovementState::Stationary || !system_calibrated.load()) {
+                // Skip gaze inference unless moving and calibrated
+                if (system_state.load() != SystemState::MovingCalibrated) {
                     continue;
                 }
 
@@ -245,10 +256,10 @@ int main(int argc, char** argv) {
     std::thread somnolence_worker([&]() {
         try {
             cv::Mat frame;
+            bool was_calibrated = false;
 
             while (!g_shutdown_requested.load()) {
-                if (calibration_requested.exchange(false)) {
-                    calibrating.store(true);
+                if (system_state.load() == SystemState::Calibrating) {
                     CalibrationContext calib_ctx{
                         *mailbox_somno,
                         face_detector,
@@ -256,15 +267,18 @@ int main(int argc, char** argv) {
                         g_shutdown_requested
                     };
                     auto result = run_calibration(calib_ctx, calib_audio_config);
-                    calibrating.store(false);
                     if (result.has_value()) {
                         auto now_calib = std::chrono::steady_clock::now();
                         ear_detector.apply_baseline(result->ear_open, result->ear_closed, now_calib);
                         head_detector.apply_baseline(result->neutral_rho);
                         mar_detector.reset();
                         face_detector.reset();
-                        system_calibrated.store(true);
+                        was_calibrated = true;
+                        system_state.store(SystemState::StationaryCalibrated);
                         std::cout << "[+] System calibrated. Press 'm' to switch to MOVING and enable monitoring.\n" << std::flush;
+                    } else {
+                        system_state.store(was_calibrated ? SystemState::StationaryCalibrated
+                                                          : SystemState::StationaryUncalibrated);
                     }
                     continue;
                 }
@@ -277,8 +291,8 @@ int main(int argc, char** argv) {
                     continue;
                 }
 
-                // Skip all somnolence detections if stationary or uncalibrated
-                if (vehicle_state.load() != VehicleMovementState::Moving || !system_calibrated.load()) {
+                // Skip all somnolence detections unless moving and calibrated
+                if (system_state.load() != SystemState::MovingCalibrated) {
                     continue;
                 }
 
@@ -297,7 +311,7 @@ int main(int argc, char** argv) {
                 HeadOrientationAssessment head_res = head_detector.process(landmarks, now);
                 MarAssessment mar_res = mar_detector.process(landmarks, now);
 
-                // Register fatigue cues (all gated on system_calibrated && Moving)
+                // Register fatigue cues (all gated on MovingCalibrated)
                 for (const auto& cue : ear_res.cues) {
                     alert_manager.register_cue(cue.type, cue.strength, cue.details);
                 }
@@ -328,9 +342,12 @@ int main(int argc, char** argv) {
     // 10. Start Console Controller
     console.start();
 
+    const SystemState startup_state = system_state.load();
+    const bool is_moving_startup = (startup_state == SystemState::MovingUncalibrated ||
+                                    startup_state == SystemState::MovingCalibrated);
     std::cout << "[+] Pipeline active.\n"
               << "    Vehicle movement state: "
-              << (vehicle_state.load() == VehicleMovementState::Moving ? "MOVING (Active)" : "STATIONARY (Paused)")
+              << (is_moving_startup ? "MOVING (Uncalibrated - detections paused)" : "STATIONARY (Paused)")
               << "\n"
               << "    Confidence threshold  : " << conf_threshold_val * 100.0f << "%\n"
               << "    Mode window duration  : " << window_ms << " ms\n"

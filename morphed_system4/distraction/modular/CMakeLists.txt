@@ -31,6 +31,7 @@ set(MODULAR_DISTRACTION_SOURCES
     src/CameraCapture.cpp
     src/Preprocessor.cpp
     src/GazeDetector.cpp
+    src/AlertLogic.cpp
     src/AlertManager.cpp
     src/ConsoleController.cpp
     src/FaceLandmarkDetector.cpp

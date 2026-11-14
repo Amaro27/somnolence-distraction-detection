@@ -12,11 +12,10 @@
  * @brief Unified alert coordinator and state machine.
  *
  * Responsibilities:
- * 1. Evaluates 2.0-second sliding window mode for off-road gaze distraction.
- * 2. Emits placeholder print statements for alert triggers and recovery.
- * 3. Dispatches rate-controlled, non-blocking auditory alert pulses.
- * 4. Evaluates multimodal somnolence cues (1 strong cue or 2 light cues in 2 min).
- * 5. Provides thread-safe interfaces for concurrent distraction and somnolence workers.
+ * 1. Maintains thread-safe temporal windows and driver/risk state.
+ * 2. Delegates stateless window evaluation to AlertLogic.
+ * 3. Emits console notifications and rate-controlled auditory alerts outside mutex lock.
+ * 4. Provides thread-safe interfaces for concurrent distraction and somnolence workers.
  */
 class AlertManager {
 public:
@@ -33,7 +32,7 @@ public:
     void update_gaze(const DistractionDetectionResult& detection);
 
     /**
-     * @brief Extension hook for future somnolence / drowsiness module.
+     * @brief Extension hook for somnolence / drowsiness module.
      * Evaluates immediate strong cues or 2 light cues within 2 minutes.
      * @param type Cue type (PERCLOS, blink, droop, yawn).
      * @param strength Light (accumulates over 2 min) or Strong (immediate trigger).
@@ -42,7 +41,7 @@ public:
     void register_cue(CueType type, CueStrength strength, const std::string& details = "");
 
     /**
-     * @brief Emits a rate-controlled non-blocking auditory alert tone (placeholder print).
+     * @brief Emits a rate-controlled non-blocking auditory alert tone.
      * @param risk Low, Medium, or High risk level.
      * @param reason Human-readable description of alert trigger.
      */
@@ -59,8 +58,8 @@ public:
     AlertConfig config() const;
 
 private:
-    void evaluate_distraction_mode(std::chrono::steady_clock::time_point now);
-    void evaluate_somnolence_cues(std::chrono::steady_clock::time_point now);
+    bool try_consume_audio_cooldown(RiskLevel risk, float& out_volume) noexcept;
+    void dispatch_auditory_alert(RiskLevel risk, float volume, const std::string& reason);
 
     mutable std::mutex mutex_;
     AlertConfig config_;
