@@ -1,9 +1,68 @@
 #include "AlertManager.hpp"
 #include "AlertLogic.hpp"
 
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <vector>
+
+namespace {
+
+std::string log_somnolence_triggers_and_reason(
+    const std::vector<CueEvent>& strong_cues_triggered,
+    bool trigger_high_alert,
+    const std::string& trigger_reason,
+    const std::vector<CueEvent>& cues_snapshot
+) {
+    for (const auto& cue : strong_cues_triggered) {
+        const char* cue_name = AlertLogic::cue_type_to_string(cue.type);
+        std::cout << "\n[ALERT] CRITICAL DROWSINESS (STRONG CUE): " << cue_name
+                  << (cue.details.empty() ? "" : " - " + cue.details) << "\n"
+                  << "        Immediate alert triggered!\n";
+    }
+
+    if (trigger_high_alert) {
+        std::cout << "\n[ALERT] DROWSINESS DETECTED: " << cues_snapshot.size()
+                  << " light fatigue cues accumulated within 2 minutes!\n";
+        for (size_t i = 0; i < cues_snapshot.size(); ++i) {
+            std::cout << "        Cue #" << (i + 1) << ": "
+                      << AlertLogic::cue_type_to_string(cues_snapshot[i].type)
+                      << " (" << cues_snapshot[i].details << ")\n";
+        }
+    }
+
+    if (!strong_cues_triggered.empty()) {
+        return std::string("Critical Drowsiness (Strong Cue: ") +
+               AlertLogic::cue_type_to_string(strong_cues_triggered.back().type) + ")";
+    }
+    if (trigger_high_alert) {
+        return trigger_reason;
+    }
+    return "Sustained Drowsiness";
+}
+
+bool consume_rate_cooldown(
+    double rate_hz,
+    double fallback_interval_sec,
+    std::chrono::steady_clock::time_point& last_alert_time
+) noexcept {
+    const auto now = std::chrono::steady_clock::now();
+    const double min_interval_sec = (rate_hz > 0.0) ? (1.0 / rate_hz) : fallback_interval_sec;
+    const double elapsed = std::chrono::duration<double>(now - last_alert_time).count();
+    if (elapsed < min_interval_sec) {
+        return false;
+    }
+    last_alert_time = now;
+    return true;
+}
+
+void log_auditory_alert(float gain_db, const std::string& reason) {
+    std::cout << "[AUDITORY ALERT] Tone pulse emitted"
+              << " | Gain: " << std::fixed << std::setprecision(1) << gain_db << " dB"
+              << " | Reason: " << reason << "\n";
+}
+
+} // namespace
 
 AlertManager::AlertManager(AlertConfig config, AudioManager& audio)
     : config_(std::move(config)),
@@ -14,9 +73,8 @@ AlertManager::AlertManager(AlertConfig config, AudioManager& audio)
 void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
     bool warmed_up_now = false;
     long long warmup_secs = 0;
-    bool transitioned_to_distracted = false;
+    bool trigger_distraction_alert = false;
     bool transitioned_to_safe = false;
-    bool emit_audio = false;
     AlertLogic::DistractionAssessment assessment;
 
     {
@@ -35,8 +93,11 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - window_start_time_);
             if (elapsed >= config_.distraction_window) {
                 has_warmed_up_ = true;
-                warmed_up_now = true;
-                warmup_secs = std::chrono::duration_cast<std::chrono::seconds>(config_.distraction_window).count();
+                if (!initial_warmup_logged_) {
+                    initial_warmup_logged_ = true;
+                    warmed_up_now = true;
+                    warmup_secs = std::chrono::duration_cast<std::chrono::seconds>(config_.distraction_window).count();
+                }
             } else {
                 return; // Maintain default Safe state during warm-up
             }
@@ -52,11 +113,8 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
 
             if (assessment.total_votes > 0) {
                 if (assessment.is_distracted) {
-                    if (current_state_ != DriverState::Distracted) {
-                        current_state_ = DriverState::Distracted;
-                        transitioned_to_distracted = true;
-                    }
-                    emit_audio = try_consume_audio_cooldown();
+                    current_state_ = DriverState::Distracted;
+                    trigger_distraction_alert = true;
                 } else {
                     if (current_state_ == DriverState::Distracted) {
                         current_state_ = DriverState::Safe;
@@ -72,109 +130,175 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
                   << "s temporal window filled. Active mode evaluation started.\n";
     }
 
-    if (transitioned_to_distracted) {
+    if (trigger_distraction_alert) {
         std::cout << "\n[ALERT] Distraction detected: Driver looking away from road!\n"
                   << "        Mode: NotLookingRoad (" << assessment.not_looking_votes << "/"
                   << assessment.total_votes << " votes in 2.0s)\n"
                   << "        Avg Looking Probability: " << std::fixed << std::setprecision(1)
                   << (assessment.avg_looking_prob * 100.0f) << "%\n";
+        log_auditory_alert(config_.audio_config.distraction_gain_db, "Driver looking away from road");
+        audio_.play_blocking(
+            config_.audio_config.distraction_sound_path,
+            config_.audio_config.distraction_gain_db
+        );
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        gaze_window_.clear();
+        has_warmed_up_ = false;
+        window_start_time_ = std::chrono::steady_clock::now();
+        if (current_state_ == DriverState::Distracted) {
+            current_state_ = DriverState::Safe;
+        }
     } else if (transitioned_to_safe) {
         std::cout << "\n[INFO] Alert cleared: Driver attention returned to road.\n"
                   << "       Mode: LookingRoad (" << assessment.looking_votes << "/"
                   << assessment.total_votes << " votes in 2.0s)\n";
+        audio_.stop();
     }
+}
 
-    if (emit_audio) {
-        dispatch_auditory_alert(
-            config_.audio_config.distraction_sound_path,
-            config_.audio_config.distraction_gain_db,
-            "Driver looking away from road"
-        );
+void AlertManager::register_cue_locked(
+    const CueEvent& cue,
+    std::vector<CueEvent>& strong_cues_triggered,
+    bool& trigger_high_alert,
+    std::string& trigger_reason,
+    std::vector<CueEvent>& cues_snapshot
+) {
+    if (cue.strength == CueStrength::Strong) {
+        if (current_state_ != DriverState::Drowsy) {
+            current_state_ = DriverState::Drowsy;
+            drowsiness_step_idx_ = 0;
+            last_alert_sound_time_ = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        }
+        strong_cues_triggered.push_back(cue);
+    } else {
+        cue_window_.push_back(cue);
+
+        const auto cutoff = cue.timestamp - config_.light_cue_window;
+        while (!cue_window_.empty() && cue_window_.front().timestamp < cutoff) {
+            cue_window_.pop_front();
+        }
+
+        const AlertLogic::SomnolenceAssessment assessment = AlertLogic::evaluate_somnolence_cues(cue_window_);
+        if (assessment.trigger_high_alert) {
+            if (current_state_ != DriverState::Drowsy) {
+                current_state_ = DriverState::Drowsy;
+                drowsiness_step_idx_ = 0;
+                last_alert_sound_time_ = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+            }
+            trigger_high_alert = true;
+            trigger_reason = assessment.trigger_reason;
+            cues_snapshot.assign(cue_window_.begin(), cue_window_.end());
+        }
     }
 }
 
 void AlertManager::register_cue(CueType type, CueStrength strength, const std::string& details) {
-    bool is_strong_trigger = false;
+    std::vector<CueEvent> strong_cues_triggered;
     bool trigger_high_alert = false;
     bool emit_audio = false;
+    float gain_db = 0.0f;
     std::string trigger_reason;
     std::vector<CueEvent> cues_snapshot;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto now = std::chrono::steady_clock::now();
-
-        if (strength == CueStrength::Strong) {
-            // Condition 1: Immediate alarm on any STRONG cue
-            current_state_ = DriverState::Drowsy;
-            is_strong_trigger = true;
-            emit_audio = try_consume_audio_cooldown();
-        } else {
-            // Condition 2: Accumulate LIGHT cues over 2-minute sliding window
-            cue_window_.push_back({type, strength, now, details});
-
-            const auto cutoff = now - config_.light_cue_window;
-            while (!cue_window_.empty() && cue_window_.front().timestamp < cutoff) {
-                cue_window_.pop_front();
-            }
-
-            const AlertLogic::SomnolenceAssessment assessment = AlertLogic::evaluate_somnolence_cues(cue_window_);
-            if (assessment.trigger_high_alert) {
-                current_state_ = DriverState::Drowsy;
-                trigger_high_alert = true;
-                trigger_reason = assessment.trigger_reason;
-                cues_snapshot.assign(cue_window_.begin(), cue_window_.end());
-                emit_audio = try_consume_audio_cooldown();
-            }
+        const CueEvent cue{type, strength, std::chrono::steady_clock::now(), details};
+        register_cue_locked(cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
+        if (current_state_ == DriverState::Drowsy) {
+            emit_audio = try_consume_drowsiness_cooldown(gain_db);
         }
     }
 
-    if (is_strong_trigger) {
-        const char* cue_name = AlertLogic::cue_type_to_string(type);
-        std::cout << "\n[ALERT] CRITICAL DROWSINESS (STRONG CUE): " << cue_name
-                  << (details.empty() ? "" : " - " + details) << "\n"
-                  << "        Immediate alert triggered!\n";
-        if (emit_audio) {
-            dispatch_auditory_alert(
-                config_.audio_config.drowsiness_sound_path,
-                config_.audio_config.drowsiness_gain_db,
-                std::string("Critical Drowsiness (Strong Cue: ") + cue_name + ")"
-            );
-        }
-        return;
-    }
-
-    if (trigger_high_alert) {
-        std::cout << "\n[ALERT] DROWSINESS DETECTED: " << cues_snapshot.size()
-                  << " light fatigue cues accumulated within 2 minutes!\n";
-        for (size_t i = 0; i < cues_snapshot.size(); ++i) {
-            std::cout << "        Cue #" << (i + 1) << ": "
-                      << AlertLogic::cue_type_to_string(cues_snapshot[i].type)
-                      << " (" << cues_snapshot[i].details << ")\n";
-        }
-        if (emit_audio) {
-            dispatch_auditory_alert(
-                config_.audio_config.drowsiness_sound_path,
-                config_.audio_config.drowsiness_gain_db,
-                trigger_reason
-            );
-        }
+    const std::string reason = log_somnolence_triggers_and_reason(
+        strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot
+    );
+    if (emit_audio) {
+        dispatch_auditory_alert(config_.audio_config.drowsiness_sound_path, gain_db, reason);
     }
 }
 
-bool AlertManager::try_consume_audio_cooldown() noexcept {
-    const auto now = std::chrono::steady_clock::now();
-    double min_interval_sec = 1.0;
-    if (config_.audio_config.repetition_rate_hz > 0.0) {
-        min_interval_sec = 1.0 / config_.audio_config.repetition_rate_hz;
+void AlertManager::update_somnolence(
+    const EarAssessment& ear,
+    const HeadOrientationAssessment& head,
+    const MarAssessment& mar
+) {
+    std::vector<CueEvent> strong_cues_triggered;
+    bool trigger_high_alert = false;
+    bool cleared_drowsiness = false;
+    bool emit_audio = false;
+    float gain_db = 0.0f;
+    std::string trigger_reason;
+    std::vector<CueEvent> cues_snapshot;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& cue : ear.cues) {
+            register_cue_locked(cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
+        }
+        if (head.cue.has_value()) {
+            register_cue_locked(*head.cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
+        }
+        if (mar.cue.has_value()) {
+            register_cue_locked(*mar.cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
+        }
+
+        const bool features_normal = !ear.in_blink_cycle && !head.is_drooping && !mar.is_yawning;
+        if (current_state_ == DriverState::Drowsy) {
+            if (features_normal && strong_cues_triggered.empty() && !trigger_high_alert) {
+                current_state_ = DriverState::Safe;
+                drowsiness_step_idx_ = 0;
+                cue_window_.clear();
+                last_alert_sound_time_ = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+                cleared_drowsiness = true;
+            } else {
+                emit_audio = try_consume_drowsiness_cooldown(gain_db);
+            }
+        }
     }
 
-    const double elapsed = std::chrono::duration<double>(now - last_alert_sound_time_).count();
-    if (elapsed < min_interval_sec) {
+    const std::string reason = log_somnolence_triggers_and_reason(
+        strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot
+    );
+    if (cleared_drowsiness) {
+        std::cout << "\n[INFO] Drowsiness alert cleared: Driver physiological features returned to normal.\n";
+        audio_.stop();
+    } else if (emit_audio) {
+        dispatch_auditory_alert(config_.audio_config.drowsiness_sound_path, gain_db, reason);
+    }
+}
+
+void AlertManager::tick_drowsiness_if_active() {
+    bool emit_audio = false;
+    float gain_db = 0.0f;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (current_state_ == DriverState::Drowsy) {
+            emit_audio = try_consume_drowsiness_cooldown(gain_db);
+        }
+    }
+
+    if (emit_audio) {
+        dispatch_auditory_alert(
+            config_.audio_config.drowsiness_sound_path,
+            gain_db,
+            "Sustained Drowsiness"
+        );
+    }
+}
+
+bool AlertManager::try_consume_drowsiness_cooldown(float& out_gain_db) noexcept {
+    if (!consume_rate_cooldown(
+            config_.audio_config.drowsiness_repetition_rate_hz,
+            60.0 / 63.5,
+            last_alert_sound_time_)) {
         return false;
     }
 
-    last_alert_sound_time_ = now;
+    const auto& steps = config_.audio_config.drowsiness_gain_steps_db;
+    const size_t idx = std::min(drowsiness_step_idx_, steps.size() - 1);
+    out_gain_db = steps[idx];
+    ++drowsiness_step_idx_;
     return true;
 }
 
@@ -183,9 +307,7 @@ void AlertManager::dispatch_auditory_alert(
     float gain_db,
     const std::string& reason
 ) {
-    std::cout << "[AUDITORY ALERT] Tone pulse emitted"
-              << " | Gain: " << std::fixed << std::setprecision(1) << gain_db << " dB"
-              << " | Reason: " << reason << "\n";
+    log_auditory_alert(gain_db, reason);
     audio_.play(sound_path, gain_db);
 }
 
@@ -196,8 +318,12 @@ void AlertManager::reset() {
         cue_window_.clear();
         current_state_ = DriverState::Safe;
         window_start_time_ = std::chrono::steady_clock::now();
+        last_alert_sound_time_ = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        drowsiness_step_idx_ = 0;
         has_warmed_up_ = false;
+        initial_warmup_logged_ = false;
     }
+    audio_.stop();
     std::cout << "[*] AlertManager state reset to Safe.\n";
 }
 

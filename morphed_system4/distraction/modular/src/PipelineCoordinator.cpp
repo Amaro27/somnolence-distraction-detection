@@ -83,7 +83,6 @@ AlertConfig PipelineCoordinator::build_alert_config(const Options& options) {
     cfg.distraction_window = std::chrono::milliseconds(options.window_ms);
     cfg.policy = options.policy;
     cfg.light_cue_window = std::chrono::seconds(120);
-    cfg.audio_config.repetition_rate_hz = 1.0;
     return cfg;
 }
 
@@ -338,10 +337,11 @@ void PipelineCoordinator::gaze_worker_loop() {
                 alert_config_.policy
             );
 
+            const auto t_work_end = std::chrono::steady_clock::now();
             alert_manager_.update_gaze(result);
             const auto t_end = std::chrono::steady_clock::now();
 
-            gaze_work_ms_.push_back(std::chrono::duration<double, std::milli>(t_end - t_work_start).count());
+            gaze_work_ms_.push_back(std::chrono::duration<double, std::milli>(t_work_end - t_work_start).count());
             gaze_cycle_ms_.push_back(std::chrono::duration<double, std::milli>(t_end - t_iter_start).count());
         }
     } catch (const std::exception& e) {
@@ -406,15 +406,9 @@ void PipelineCoordinator::somnolence_worker_loop() {
                 HeadOrientationAssessment head_res = head_detector_.process(landmarks, t_work_start);
                 MarAssessment mar_res = mar_detector_.process(landmarks, t_work_start);
 
-                for (const auto& cue : ear_res.cues) {
-                    alert_manager_.register_cue(cue.type, cue.strength, cue.details);
-                }
-                if (head_res.cue.has_value()) {
-                    alert_manager_.register_cue(head_res.cue->type, head_res.cue->strength, head_res.cue->details);
-                }
-                if (mar_res.cue.has_value()) {
-                    alert_manager_.register_cue(mar_res.cue->type, mar_res.cue->strength, mar_res.cue->details);
-                }
+                alert_manager_.update_somnolence(ear_res, head_res, mar_res);
+            } else {
+                alert_manager_.tick_drowsiness_if_active();
             }
 
             const auto t_end = std::chrono::steady_clock::now();

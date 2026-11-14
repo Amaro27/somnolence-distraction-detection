@@ -157,15 +157,6 @@ EarAssessment EarDetector::process(
             if (reached_effective_closure_) {
                 auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(t_last_closed_ - t_start_closure_);
                 last_blink_duration_ms_ = std::max(0.0, static_cast<double>(dur.count()));
-
-                if (dur >= config_.microsleep_thresh && !microsleep_alarm_active_) {
-                    cues.push_back(CueEvent{
-                        CueType::BlinkDuration,
-                        CueStrength::Strong,
-                        now,
-                        "Micro-sleep: blink duration was " + std::to_string(dur.count()) + " ms"
-                    });
-                }
             }
             in_blink_cycle_ = false;
             reached_effective_closure_ = false;
@@ -197,7 +188,7 @@ EarAssessment EarDetector::process(
         perclos_pct_ = (static_cast<double>(closed_samples_count_) / static_cast<double>(perclos_buffer_.size())) * 100.0;
 
         auto elapsed_since_cue = std::chrono::duration_cast<std::chrono::seconds>(now - last_perclos_cue_time_);
-        if (elapsed_since_cue >= std::chrono::seconds(5)) {
+        if (in_blink_cycle_ && elapsed_since_cue >= std::chrono::seconds(5)) {
             if (perclos_pct_ >= config_.perclos_high_thresh) {
                 last_perclos_cue_time_ = now;
                 cues.push_back(CueEvent{

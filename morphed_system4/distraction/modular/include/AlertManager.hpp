@@ -4,9 +4,11 @@
 #include "Types.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <deque>
 #include <mutex>
 #include <string>
+#include <vector>
 
 /**
  * @brief Unified alert coordinator and state machine.
@@ -40,6 +42,21 @@ public:
      */
     void register_cue(CueType type, CueStrength strength, const std::string& details = "");
 
+    /**
+     * @brief Evaluates per-frame somnolence assessments, triggers/sustains stepped
+     * drowsiness alarms at 63.5 BPM, and stops audio immediately when features recover.
+     */
+    void update_somnolence(
+        const EarAssessment& ear,
+        const HeadOrientationAssessment& head,
+        const MarAssessment& mar
+    );
+
+    /**
+     * @brief Sustains active drowsiness alarm cadence when face landmarks are temporarily lost.
+     */
+    void tick_drowsiness_if_active();
+
     DriverState current_driver_state() const;
 
     /**
@@ -50,7 +67,14 @@ public:
     AlertConfig config() const;
 
 private:
-    bool try_consume_audio_cooldown() noexcept;
+    bool try_consume_drowsiness_cooldown(float& out_gain_db) noexcept;
+    void register_cue_locked(
+        const CueEvent& cue,
+        std::vector<CueEvent>& strong_cues_triggered,
+        bool& trigger_high_alert,
+        std::string& trigger_reason,
+        std::vector<CueEvent>& cues_snapshot
+    );
     void dispatch_auditory_alert(const std::string& sound_path, float gain_db, const std::string& reason);
 
     mutable std::mutex mutex_;
@@ -62,5 +86,7 @@ private:
     std::deque<CueEvent> cue_window_;                    // 2-minute light cue history
     std::chrono::steady_clock::time_point window_start_time_;
     std::chrono::steady_clock::time_point last_alert_sound_time_;
+    size_t drowsiness_step_idx_{0};
     bool has_warmed_up_{false};
+    bool initial_warmup_logged_{false};
 };

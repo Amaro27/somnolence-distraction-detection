@@ -100,6 +100,7 @@ struct DistractionDetectionResult {
 struct HeadOrientationAssessment {
     double pitch_deg{0.0};
     double rho{0.0};
+    bool is_drooping{false};
     std::optional<CueEvent> cue; // Light: Droop (pitch <= -20 deg for >= 1.5s)
 };
 
@@ -143,11 +144,12 @@ struct LSTMInferenceConfig {
  * @brief Configuration for auditory alert sounds and cadence.
  */
 struct AuditoryAlertConfig {
-    double repetition_rate_hz{1.0}; // Pulses per second
-    std::string distraction_sound_path{"input/sounds/single-beep-350-hz.wav"};
+    std::string distraction_sound_path{"input/sounds/distraction_warning.wav"};
     float distraction_gain_db{0.0f};
-    std::string drowsiness_sound_path{"input/sounds/Ring06-LOUD.wav"};
-    float drowsiness_gain_db{0.0f};
+
+    double drowsiness_repetition_rate_hz{63.5 / 60.0}; // 63.5 BPM (~1.058 Hz, ~944.9 ms interval)
+    std::string drowsiness_sound_path{"input/sounds/single-beep-1850-Hz-975-Hz.wav"};
+    std::array<float, 5> drowsiness_gain_steps_db{-21.0f, -15.6f, -11.0f, -6.5f, 0.0f};
 };
 
 /**

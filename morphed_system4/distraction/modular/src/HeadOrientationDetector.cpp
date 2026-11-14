@@ -69,6 +69,7 @@ HeadOrientationAssessment HeadOrientationDetector::process(
     return HeadOrientationAssessment{
         pitch_deg,
         rho,
+        in_droop_,
         cue
     };
 }
