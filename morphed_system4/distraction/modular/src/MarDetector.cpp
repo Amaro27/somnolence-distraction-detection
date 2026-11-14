@@ -25,7 +25,7 @@ MarAssessment MarDetector::process(
     double yawn_duration_sec = 0.0;
     std::optional<CueEvent> cue = std::nullopt;
 
-    if (mar_raw > config_.mar_threshold.value) {
+    if (mar_raw > config_.mar_threshold) {
         if (!in_yawn_) {
             in_yawn_ = true;
             yawn_start_ = now;

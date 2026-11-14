@@ -2,8 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <iostream>
-#include <opencv2/videoio.hpp>
+#include <utility>
 
 CameraCapture::CameraCapture(std::string source, std::shared_ptr<ThreadSafeMailbox<cv::Mat>> mailbox)
     : source_(std::move(source)), mailboxes_{std::move(mailbox)} {}
@@ -20,9 +21,9 @@ bool CameraCapture::start() {
         return true;
     }
 
-    // Probe whether source can be opened before launching thread
+    // Open capture device synchronously on calling thread (fail-fast single open)
     cv::VideoCapture cap;
-    bool is_numeric = !source_.empty() && std::all_of(source_.begin(), source_.end(), [](unsigned char c) {
+    const bool is_numeric = !source_.empty() && std::all_of(source_.begin(), source_.end(), [](unsigned char c) {
         return std::isdigit(c);
     });
 
@@ -36,10 +37,10 @@ bool CameraCapture::start() {
         std::cerr << "[!] CameraCapture Error: Failed to open video source '" << source_ << "'\n";
         return false;
     }
-    cap.release();
 
     is_running_.store(true);
-    worker_thread_ = std::thread(&CameraCapture::capture_loop, this);
+    // Transfer opened handle directly into worker thread (eliminates double-open cycle)
+    worker_thread_ = std::thread(&CameraCapture::capture_loop, this, std::move(cap), is_numeric);
     std::cout << "[+] CameraCapture thread started on source: " << source_ << "\n";
     return true;
 }
@@ -61,27 +62,7 @@ bool CameraCapture::is_running() const {
     return is_running_.load();
 }
 
-void CameraCapture::capture_loop() {
-    cv::VideoCapture cap;
-    bool is_numeric = !source_.empty() && std::all_of(source_.begin(), source_.end(), [](unsigned char c) {
-        return std::isdigit(c);
-    });
-
-    if (is_numeric) {
-        cap.open(std::stoi(source_));
-    } else {
-        cap.open(source_);
-    }
-
-    if (!cap.isOpened()) {
-        std::cerr << "[!] CameraCapture thread error: Video source failed to open.\n";
-        is_running_.store(false);
-        for (auto& mb : mailboxes_) {
-            if (mb) mb->stop();
-        }
-        return;
-    }
-
+void CameraCapture::capture_loop(cv::VideoCapture cap, bool is_numeric) {
     double fps = cap.get(cv::CAP_PROP_FPS);
     int frame_delay_ms = 0;
     if (!is_numeric) {
@@ -98,6 +79,7 @@ void CameraCapture::capture_loop() {
             break;
         }
 
+        // cv::Mat uses shallow ref-counted copies, so deep clone per mailbox ensures thread isolation.
         for (auto& mb : mailboxes_) {
             if (mb) {
                 mb->put(frame.clone());

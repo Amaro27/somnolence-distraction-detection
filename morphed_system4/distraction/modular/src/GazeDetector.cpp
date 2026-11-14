@@ -46,10 +46,10 @@ bool GazeDetector::initialize() {
     }
 
     // Allocate 3D sequence blob and flat ring buffer once (zero hot-path allocations)
-    const int seq_dims[3] = {1, static_cast<int>(config_.seq_len.value), static_cast<int>(config_.feature_dim)};
+    const int seq_dims[3] = {1, static_cast<int>(config_.seq_len), static_cast<int>(config_.feature_dim)};
     seq_blob_.create(3, seq_dims, CV_32F);
     seq_blob_.setTo(cv::Scalar(0.0f));
-    ring_buffer_.assign(config_.seq_len.value * config_.feature_dim, 0.0f);
+    ring_buffer_.assign(config_.seq_len * config_.feature_dim, 0.0f);
 
     // Pre-warm both networks with dummy forward pass to eliminate first-frame latency
     try {
@@ -80,7 +80,7 @@ void GazeDetector::reset() noexcept {
 
 void GazeDetector::pack_sequence_blob() noexcept {
     float* dst = seq_blob_.ptr<float>(0);
-    const size_t seq_len = config_.seq_len.value;
+    const size_t seq_len = config_.seq_len;
     const size_t feature_dim = config_.feature_dim;
     const size_t buf_len = ring_count_;
     if (buf_len == 0) return;
@@ -102,7 +102,7 @@ void GazeDetector::pack_sequence_blob() noexcept {
 
 DistractionDetectionResult GazeDetector::infer_frame(
     const cv::Mat& input_blob,
-    ConfidenceThreshold conf_threshold,
+    float min_confidence,
     ThresholdEvaluationPolicy policy
 ) {
     // 1. Stage 1: Spatial ResNet-18 Backbone
@@ -110,7 +110,7 @@ DistractionDetectionResult GazeDetector::infer_frame(
     cv::Mat feat_mat = net_backbone_.forward();
 
     // 2. Write 512-d feature directly into pre-allocated flat ring buffer
-    const size_t seq_len = config_.seq_len.value;
+    const size_t seq_len = config_.seq_len;
     const size_t feature_dim = config_.feature_dim;
     float* slot_ptr = ring_buffer_.data() + ring_head_ * feature_dim;
     std::memcpy(slot_ptr, feat_mat.ptr<float>(0), feature_dim * sizeof(float));
@@ -140,7 +140,7 @@ DistractionDetectionResult GazeDetector::infer_frame(
 
     if (policy == ThresholdEvaluationPolicy::BinarizeThreshold) {
         // Interpretation A: P(looking_road) >= threshold -> LookingRoad; else NotLookingRoad
-        if (p_looking >= conf_threshold.value) {
+        if (p_looking >= min_confidence) {
             assigned_class = GazeClass::LookingRoad;
         } else {
             assigned_class = GazeClass::NotLookingRoad;

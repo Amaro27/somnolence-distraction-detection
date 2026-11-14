@@ -1,8 +1,7 @@
 #pragma once
 
-#include "Types.hpp"
-
 #include <opencv2/core/mat.hpp>
+#include <opencv2/core/types.hpp>
 #include <opencv2/imgproc.hpp>
 
 /**
@@ -24,7 +23,7 @@ public:
      * @param clahe_grid CLAHE tile grid size (default: 8x8).
      */
     explicit Preprocessor(
-        ImageDimension2D input_dimension = ImageDimension2D(224, 224),
+        cv::Size input_dimension = cv::Size(224, 224),
         float clahe_clip = 2.5f,
         cv::Size clahe_grid = cv::Size(8, 8)
     );
@@ -36,12 +35,12 @@ public:
      */
     void process(const cv::Mat& bgr_frame, cv::Mat& out_blob);
 
-    ImageDimension2D dimension() const { return dimension_; }
+    cv::Size dimension() const { return dimension_; }
 
 private:
     void pack_normalized_nchw(const cv::Mat& rgb_clahe, cv::Mat& out_blob);
 
-    ImageDimension2D dimension_;
+    cv::Size dimension_;
     cv::Ptr<cv::CLAHE> clahe_;
 
     // Reusable intermediate frame buffers to avoid per-frame heap allocations

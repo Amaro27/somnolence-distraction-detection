@@ -1,30 +1,27 @@
 #pragma once
 
 #include <atomic>
-#include <functional>
+#include <cstdint>
 #include <thread>
 
+enum class ConsoleCommand : uint8_t {
+    None = 0,
+    ToggleMovement,
+    Calibrate,
+    Quit
+};
+
 /**
- * @brief Non-blocking console keyboard listener for interactive demonstrations.
+ * @brief Non-blocking console keyboard listener for interactive control.
  *
  * Controls:
  *   'm' / 'M' - Toggle vehicle movement state (Stationary <-> Moving).
- *   'c' / 'C' - Trigger calibration routine (placeholder for drowsiness baseline).
+ *   'c' / 'C' - Trigger physiological baseline calibration.
  *   'q' / 'Q' - Cleanly shutdown and exit application.
  */
 class ConsoleController {
 public:
-    using Callback = std::function<void()>;
-
-    /**
-     * @brief Constructs console controller with user callbacks.
-     */
-    ConsoleController(
-        Callback on_toggle_movement,
-        Callback on_calibrate,
-        Callback on_quit
-    );
-
+    ConsoleController() = default;
     ~ConsoleController();
 
     // Non-copyable, non-movable
@@ -41,15 +38,19 @@ public:
      */
     void stop();
 
-    bool is_running() const { return is_running_.load(); }
+    /**
+     * @brief Atomically retrieves and clears any pending console command.
+     */
+    ConsoleCommand poll_command() noexcept {
+        return pending_cmd_.exchange(ConsoleCommand::None, std::memory_order_acq_rel);
+    }
+
+    bool is_running() const noexcept { return is_running_.load(std::memory_order_relaxed); }
 
 private:
     void listener_loop();
 
-    Callback on_toggle_movement_;
-    Callback on_calibrate_;
-    Callback on_quit_;
-
     std::atomic<bool> is_running_{false};
+    std::atomic<ConsoleCommand> pending_cmd_{ConsoleCommand::None};
     std::thread worker_thread_;
 };

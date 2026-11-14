@@ -44,7 +44,7 @@ public:
      */
     DistractionDetectionResult infer_frame(
         const cv::Mat& input_blob,
-        ConfidenceThreshold conf_threshold = ConfidenceThreshold(0.70f),
+        float min_confidence = 0.70f,
         ThresholdEvaluationPolicy policy = ThresholdEvaluationPolicy::BinarizeThreshold
     );
 

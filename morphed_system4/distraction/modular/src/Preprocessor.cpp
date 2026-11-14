@@ -22,7 +22,7 @@ constexpr float SHIFT_G = -MEAN_G / STD_G;
 constexpr float SHIFT_B = -MEAN_B / STD_B;
 } // namespace
 
-Preprocessor::Preprocessor(ImageDimension2D input_dimension, float clahe_clip, cv::Size clahe_grid)
+Preprocessor::Preprocessor(cv::Size input_dimension, float clahe_clip, cv::Size clahe_grid)
     : dimension_(input_dimension),
       clahe_(cv::createCLAHE(clahe_clip, clahe_grid)),
       resized_rgb_(input_dimension.height, input_dimension.width, CV_8UC3),

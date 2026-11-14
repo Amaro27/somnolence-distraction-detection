@@ -35,31 +35,24 @@ char posix_getch() {
 } // namespace
 #endif
 
-ConsoleController::ConsoleController(
-    Callback on_toggle_movement,
-    Callback on_calibrate,
-    Callback on_quit
-) : on_toggle_movement_(std::move(on_toggle_movement)),
-    on_calibrate_(std::move(on_calibrate)),
-    on_quit_(std::move(on_quit)) {}
-
 ConsoleController::~ConsoleController() {
     stop();
 }
 
 void ConsoleController::start() {
-    if (is_running_.load()) return;
+    if (is_running_.load(std::memory_order_acquire)) return;
 
-    is_running_.store(true);
+    pending_cmd_.store(ConsoleCommand::None, std::memory_order_relaxed);
+    is_running_.store(true, std::memory_order_release);
     worker_thread_ = std::thread(&ConsoleController::listener_loop, this);
     std::cout << "[+] ConsoleController listener thread started.\n";
     std::cout << "    [Controls] 'm': Toggle vehicle movement (detect on/off)\n"
-              << "               'c': Trigger calibration placeholder\n"
+              << "               'c': Trigger calibration routine\n"
               << "               'q': Quit application cleanly\n";
 }
 
 void ConsoleController::stop() {
-    is_running_.store(false);
+    is_running_.store(false, std::memory_order_release);
     if (worker_thread_.joinable()) {
         worker_thread_.join();
     }
@@ -67,7 +60,7 @@ void ConsoleController::stop() {
 
 void ConsoleController::listener_loop() {
     try {
-        while (is_running_.load()) {
+        while (is_running_.load(std::memory_order_acquire)) {
             bool hit = false;
             char ch = 0;
 
@@ -85,11 +78,11 @@ void ConsoleController::listener_loop() {
 
             if (hit) {
                 if (ch == 'm' || ch == 'M') {
-                    if (on_toggle_movement_) on_toggle_movement_();
+                    pending_cmd_.store(ConsoleCommand::ToggleMovement, std::memory_order_release);
                 } else if (ch == 'c' || ch == 'C') {
-                    if (on_calibrate_) on_calibrate_();
+                    pending_cmd_.store(ConsoleCommand::Calibrate, std::memory_order_release);
                 } else if (ch == 'q' || ch == 'Q') {
-                    if (on_quit_) on_quit_();
+                    pending_cmd_.store(ConsoleCommand::Quit, std::memory_order_release);
                     break;
                 }
             }

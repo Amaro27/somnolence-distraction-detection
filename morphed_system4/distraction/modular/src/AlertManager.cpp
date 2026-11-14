@@ -26,7 +26,7 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
         gaze_window_.push_back(detection);
 
         // Prune entries older than the distraction window duration (default 2000 ms)
-        const auto cutoff = now - config_.distraction_window.value;
+        const auto cutoff = now - config_.distraction_window;
         while (!gaze_window_.empty() && gaze_window_.front().timestamp < cutoff) {
             gaze_window_.pop_front();
         }
@@ -34,10 +34,10 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
         // Check if system has accumulated enough data to span the warm-up window
         if (!has_warmed_up_) {
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - window_start_time_);
-            if (elapsed >= config_.distraction_window.value) {
+            if (elapsed >= config_.distraction_window) {
                 has_warmed_up_ = true;
                 warmed_up_now = true;
-                warmup_secs = std::chrono::duration_cast<std::chrono::seconds>(config_.distraction_window.value).count();
+                warmup_secs = std::chrono::duration_cast<std::chrono::seconds>(config_.distraction_window).count();
             } else {
                 return; // Maintain default Safe state during warm-up
             }
@@ -48,7 +48,7 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
             assessment = AlertLogic::evaluate_distraction_mode(
                 gaze_window_,
                 config_.policy,
-                config_.min_confidence.value
+                config_.min_confidence
             );
 
             if (assessment.total_votes > 0) {

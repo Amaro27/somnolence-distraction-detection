@@ -40,14 +40,14 @@ HeadOrientationAssessment HeadOrientationDetector::process(
         pitch_deg = std::atan2(-delta_rho, config_.kp_pitch) * (180.0 / CV_PI);
 
         // Time-based droop detection (pitch <= -20 deg sustained for >= 1.5s)
-        if (pitch_deg <= config_.pitch_droop_thresh.degrees) {
+        if (pitch_deg <= config_.pitch_droop_thresh) {
             if (!in_droop_) {
                 in_droop_ = true;
                 droop_cue_emitted_ = false;
                 droop_start_time_ = now;
             } else {
                 auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - droop_start_time_);
-                if (elapsed >= config_.droop_sustained_duration.value && !droop_cue_emitted_) {
+                if (elapsed >= config_.droop_sustained_duration && !droop_cue_emitted_) {
                     droop_cue_emitted_ = true;
                     cue = CueEvent{
                         CueType::HeadDroop,

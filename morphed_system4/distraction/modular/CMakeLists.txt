@@ -42,6 +42,7 @@ set(MODULAR_DISTRACTION_SOURCES
     src/AudioManager.cpp
     src/Calibration.cpp
     src/SoundPlayer.cpp
+    src/PipelineCoordinator.cpp
     src/main.cpp
 )
 

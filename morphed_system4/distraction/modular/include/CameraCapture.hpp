@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 #include <opencv2/core/mat.hpp>
+#include <opencv2/videoio.hpp>
 
 /**
  * @brief Dedicated background worker thread that captures video frames.
@@ -57,7 +58,7 @@ public:
     bool is_running() const;
 
 private:
-    void capture_loop();
+    void capture_loop(cv::VideoCapture cap, bool is_numeric);
 
     std::string source_;
     std::vector<std::shared_ptr<ThreadSafeMailbox<cv::Mat>>> mailboxes_;

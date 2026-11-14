@@ -21,16 +21,6 @@ enum class GazeClass : int {
 };
 
 /**
- * @brief Simulates vehicle movement state (typically provided by IMU or CAN bus).
- * When Stationary, detection inference is paused.
- * When Moving, detection inference and alerts are active.
- */
-enum class VehicleMovementState {
-    Stationary,
-    Moving
-};
-
-/**
  * @brief Overall driver alertness state evaluated by AlertManager.
  */
 enum class DriverState {
@@ -89,83 +79,9 @@ enum class SystemState {
     MovingCalibrated        // Calibrated, vehicle moving, full multimodal detection active
 };
 
-// ── 2. Explicit Strongly-Typed Wrappers & Aliases ────────────────────────────
+// ── 2. Type Aliases ──────────────────────────────────────────────────────────
 
 using FacialLandmarks68 = std::array<cv::Point2f, 68>;
-
-/**
- * @brief Confidence threshold [0.0f, 1.0f] for gaze classification validity.
- * Transitional conversion shim until Phase 4 migration completes.
- */
-struct ConfidenceThreshold {
-    float value{0.70f};
-    constexpr ConfidenceThreshold(float v = 0.70f) noexcept : value(v) {}
-    constexpr operator float() const noexcept { return value; }
-};
-
-/**
- * @brief Time window span for sliding mode calculation (default: 2000 ms).
- * Transitional conversion shim until Phase 4 migration completes.
- */
-struct DetectionWindowDuration {
-    std::chrono::milliseconds value{2000};
-    constexpr DetectionWindowDuration(std::chrono::milliseconds dur = std::chrono::milliseconds(2000)) noexcept
-        : value(dur) {}
-    constexpr operator std::chrono::milliseconds() const noexcept { return value; }
-};
-
-/**
- * @brief Temporal sequence length in frames for LSTM recurrence (default: 20, matching ONNX model).
- * Transitional conversion shim until Phase 4 migration completes.
- */
-struct SequenceLengthInFrames {
-    size_t value{20};
-    constexpr SequenceLengthInFrames(size_t len = 20) noexcept : value(len) {}
-    constexpr operator size_t() const noexcept { return value; }
-};
-
-/**
- * @brief 2D input dimensions (width x height) for neural network preprocessing.
- * Transitional conversion shim until Phase 4 migration completes.
- */
-struct ImageDimension2D {
-    int width{224};
-    int height{224};
-    constexpr ImageDimension2D(int w = 224, int h = 224) noexcept : width(w), height(h) {}
-    ImageDimension2D(cv::Size sz) noexcept : width(sz.width), height(sz.height) {}
-    operator cv::Size() const noexcept { return cv::Size(width, height); }
-};
-
-/**
- * @brief Head orientation pitch threshold (degrees) for droop detection.
- * Transitional conversion shim until Phase 4 migration completes.
- */
-struct PitchThreshold {
-    double degrees{-20.0};
-    constexpr PitchThreshold(double d = -20.0) noexcept : degrees(d) {}
-    constexpr operator double() const noexcept { return degrees; }
-};
-
-/**
- * @brief Mouth Aspect Ratio (MAR) threshold for yawn detection.
- * Transitional conversion shim until Phase 4 migration completes.
- */
-struct MarThreshold {
-    double value{0.55};
-    constexpr MarThreshold(double t = 0.55) noexcept : value(t) {}
-    constexpr operator double() const noexcept { return value; }
-};
-
-/**
- * @brief Time duration for persistence checks (e.g., sustained head droop or yawn).
- * Transitional conversion shim until Phase 4 migration completes.
- */
-struct SustainedDuration {
-    std::chrono::milliseconds value{1500};
-    constexpr SustainedDuration(std::chrono::milliseconds dur = std::chrono::milliseconds(1500)) noexcept
-        : value(dur) {}
-    constexpr operator std::chrono::milliseconds() const noexcept { return value; }
-};
 
 // ── 3. Data Transfer Objects ─────────────────────────────────────────────────
 
@@ -228,8 +144,8 @@ struct MarAssessment {
 struct LSTMInferenceConfig {
     std::string backbone_path{"input/resnet18_lstm_backbone.onnx"};
     std::string head_path{"input/resnet18_lstm_head.onnx"};
-    ImageDimension2D input_dimension{224, 224};
-    SequenceLengthInFrames seq_len{20};
+    cv::Size input_dimension{224, 224};
+    size_t seq_len{20};
     size_t feature_dim{512};
 };
 
@@ -248,8 +164,8 @@ struct AuditoryAlertConfig {
  * @brief Configuration for AlertManager state machine & temporal window.
  */
 struct AlertConfig {
-    ConfidenceThreshold min_confidence{0.70f};
-    DetectionWindowDuration distraction_window{std::chrono::milliseconds(2000)};
+    float min_confidence{0.70f};
+    std::chrono::milliseconds distraction_window{2000};
     ThresholdEvaluationPolicy policy{ThresholdEvaluationPolicy::BinarizeThreshold};
     std::chrono::seconds light_cue_window{120}; // 2 minutes
     AuditoryAlertConfig audio_config;
@@ -268,8 +184,8 @@ struct FaceLandmarkConfig {
  */
 struct HeadOrientationConfig {
     double kp_pitch{0.18};
-    PitchThreshold pitch_droop_thresh{PitchThreshold(-20.0)};
-    SustainedDuration droop_sustained_duration{std::chrono::milliseconds(1500)};
+    double pitch_droop_thresh{-20.0};
+    std::chrono::milliseconds droop_sustained_duration{1500};
 };
 
 /**
@@ -311,7 +227,7 @@ struct EarConfig {
  * @brief Configuration parameters for Mouth Aspect Ratio (MAR) and yawn tracking.
  */
 struct MarConfig {
-    MarThreshold mar_threshold{MarThreshold(0.55)};
+    double mar_threshold{0.55};
     std::chrono::seconds sustained_duration{4};
     std::chrono::seconds alarm_cooldown{2};
 };
