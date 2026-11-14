@@ -1,5 +1,6 @@
 from pocket_tts import TTSModel
 import scipy.io.wavfile
+import os
 
 """
 
@@ -21,10 +22,14 @@ voice_state = tts_model.get_state_for_audio_prompt("caro_davy")
 # Audio strings -- Populate as needed
 audios = {
     "calib_phase_1": "Calibration phase number 1: Look straight ahead with your eyes comfortably and normally open; please avoid blinking",
-    "calib_phase_2": "Calibration phase number 2: Look straight ahead with your eyes comfortably closed; please avoid blinking"
+    "calib_phase_2": "Calibration phase number 2: Look straight ahead with your eyes comfortably closed; please avoid blinking",
+    "distraction_warning": "Please keep your eyes on the road"
 }
 
 
 for audio in audios:
+    if audio + ".wav" in os.listdir("morphed_system4/distraction/instruction_generation/output"):
+        print(f"{audio}.wav already exists, skipping generation.")
+        continue
     audio_data = tts_model.generate_audio(voice_state, audios[audio])
     scipy.io.wavfile.write(f"morphed_system4/distraction/instruction_generation/output/{audio}.wav", tts_model.sample_rate, audio_data.numpy())
