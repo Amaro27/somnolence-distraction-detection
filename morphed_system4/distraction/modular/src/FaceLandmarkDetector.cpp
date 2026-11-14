@@ -28,17 +28,27 @@ bool FaceLandmarkDetector::initialize() {
         std::string resolved_path = resolve_predictor_path();
         std::ifstream test_f(resolved_path.c_str());
         if (!test_f.good()) {
+#ifdef DEBUG_VIEWS
             std::cerr << "[FaceLandmarkDetector] Error: Model file not accessible at: " << resolved_path << "\n";
+#endif
             return false;
         }
 
+#ifdef DEBUG_VIEWS
         std::cout << "[FaceLandmarkDetector] Loading shape predictor from: " << resolved_path << " ...\n";
+#endif
         dlib::deserialize(resolved_path) >> predictor_;
         initialized_ = true;
+#ifdef DEBUG_VIEWS
         std::cout << "[FaceLandmarkDetector] Initialized Dlib frontal face detector and 68-point shape predictor successfully.\n";
+#endif
         return true;
     } catch (const std::exception& e) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[FaceLandmarkDetector] Fatal error during Dlib initialization: " << e.what() << "\n";
+#else
+        (void)e;
+#endif
         return false;
     }
 }
@@ -75,9 +85,11 @@ std::optional<FacialLandmarks68> FaceLandmarkDetector::detect(
         } else {
             auto elapsed = std::chrono::duration<double>(now - face_lost_start_).count();
             if (elapsed >= config_.lost_face_timeout.count() && !warned_3s_) {
+#ifdef DEBUG_VIEWS
                 std::cout << "\n[WARN] FaceLandmarkDetector: Driver face not found for "
                           << elapsed << "s (>=" << config_.lost_face_timeout.count()
                           << "s)! Searching entire frame...\n";
+#endif
                 warned_3s_ = true;
             }
         }

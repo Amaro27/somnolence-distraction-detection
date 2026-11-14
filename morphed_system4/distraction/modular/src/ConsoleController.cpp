@@ -45,10 +45,12 @@ void ConsoleController::start() {
     pending_cmd_.store(ConsoleCommand::None, std::memory_order_relaxed);
     is_running_.store(true, std::memory_order_release);
     worker_thread_ = std::thread(&ConsoleController::listener_loop, this);
+#ifdef DEBUG_VIEWS
     std::cout << "[+] ConsoleController listener thread started.\n";
     std::cout << "    [Controls] 'm': Toggle vehicle movement (detect on/off)\n"
               << "               'c': Trigger calibration routine\n"
               << "               'q': Quit application cleanly\n";
+#endif
 }
 
 void ConsoleController::stop() {
@@ -90,6 +92,10 @@ void ConsoleController::listener_loop() {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
     } catch (const std::exception& e) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[ConsoleController Error]: " << e.what() << "\n" << std::flush;
+#else
+        (void)e;
+#endif
     }
 }

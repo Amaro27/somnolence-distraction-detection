@@ -60,6 +60,8 @@ public:
     );
 
     bool is_calibrated() const { return calibrated_; }
+    double thresh_descent() const noexcept { return thresh_descent_; }
+    double thresh_closure() const noexcept { return thresh_closure_; }
     const EarConfig& config() const { return config_; }
 
 private:

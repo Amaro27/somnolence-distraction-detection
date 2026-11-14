@@ -16,6 +16,7 @@ void signal_handler(int signal) {
 }
 
 void print_help() {
+#ifdef DEBUG_VIEWS
     std::cout << "Usage: modular_distraction [OPTIONS]\n\n"
               << "Options:\n"
               << "  --source <0|path>       Webcam index (default: 0) or video file path\n"
@@ -28,6 +29,7 @@ void print_help() {
               << "  --policy <binarize|filter> Threshold policy (default: binarize)\n"
               << "  --moving                Start in moving state (default: stationary)\n"
               << "  --help, -h              Display this help message\n";
+#endif
 }
 } // namespace
 
@@ -69,10 +71,12 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
+#ifdef DEBUG_VIEWS
     std::cout << "========================================================\n"
               << "[*] Real-Time Modular Driver Distraction & Somnolence System\n"
               << "[*] Parallel Dual-Worker Pipeline | Decoupled Alert Engine\n"
               << "========================================================\n";
+#endif
 
     PipelineCoordinator coordinator(std::move(options));
     if (!coordinator.initialize()) {

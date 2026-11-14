@@ -22,11 +22,15 @@ bool GazeDetector::initialize() {
     config_.head_path = PathUtils::resolve_asset_path(config_.head_path);
 
     if (!file_exists(config_.backbone_path)) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[!] GazeDetector Error: Backbone model not found at '" << config_.backbone_path << "'\n";
+#endif
         return false;
     }
     if (!file_exists(config_.head_path)) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[!] GazeDetector Error: LSTM head model not found at '" << config_.head_path << "'\n";
+#endif
         return false;
     }
 
@@ -34,14 +38,22 @@ bool GazeDetector::initialize() {
         net_backbone_ = cv::dnn::readNetFromONNX(config_.backbone_path);
         net_backbone_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
         net_backbone_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+#ifdef DEBUG_VIEWS
         std::cout << "[+] Loaded Spatial ResNet-18 Backbone from: " << config_.backbone_path << "\n";
+#endif
 
         net_head_ = cv::dnn::readNetFromONNX(config_.head_path);
         net_head_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
         net_head_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+#ifdef DEBUG_VIEWS
         std::cout << "[+] Loaded Temporal LSTM Head from: " << config_.head_path << "\n";
+#endif
     } catch (const cv::Exception& e) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[!] GazeDetector OpenCV DNN Exception: " << e.what() << "\n";
+#else
+        (void)e;
+#endif
         return false;
     }
 
@@ -64,9 +76,15 @@ bool GazeDetector::initialize() {
 
         (void)warm_feat;
         (void)warm_out;
+#ifdef DEBUG_VIEWS
         std::cout << "[+] GazeDetector neural networks pre-warmed successfully.\n";
+#endif
     } catch (const cv::Exception& e) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[!] GazeDetector warning during pre-warm: " << e.what() << "\n";
+#else
+        (void)e;
+#endif
     }
 
     reset();

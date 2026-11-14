@@ -10,6 +10,7 @@
 #include <utility>
 
 namespace {
+#ifdef DEBUG_VIEWS
 void print_benchmark_stats(const char* name, std::vector<double>& samples_ms) {
     if (samples_ms.empty()) {
         std::cout << "  " << name << ": (0 samples - no active frames processed)\n";
@@ -61,6 +62,7 @@ void print_benchmark_stats(const char* name, std::vector<double>& samples_ms) {
     std::cout.flags(old_flags);
     std::cout.precision(old_prec);
 }
+#endif
 } // namespace
 
 LSTMInferenceConfig PipelineCoordinator::build_model_config(const Options& options) {
@@ -107,7 +109,8 @@ PipelineCoordinator::PipelineCoordinator(Options options)
       gaze_detector_(model_config_),
       preprocessor_(model_config_.input_dimension),
       face_detector_(build_face_config(options_)),
-      camera_capture_(options_.source, {mailbox_gaze_, mailbox_somno_}) {}
+      debug_visualizer_(),
+      camera_capture_(options_.source, {mailbox_gaze_, mailbox_somno_, debug_visualizer_.mailbox()}) {}
 
 PipelineCoordinator::~PipelineCoordinator() {
     stop();
@@ -119,12 +122,16 @@ bool PipelineCoordinator::initialize() {
     }
 
     if (!gaze_detector_.initialize()) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[!] Fatal: Could not initialize ONNX models.\n";
+#endif
         return false;
     }
 
     if (!face_detector_.initialize()) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[!] Fatal: Could not initialize Dlib shape predictor.\n";
+#endif
         return false;
     }
 
@@ -137,6 +144,7 @@ void PipelineCoordinator::request_shutdown() noexcept {
     audio_manager_.stop();
     if (mailbox_gaze_) mailbox_gaze_->stop();
     if (mailbox_somno_) mailbox_somno_->stop();
+    debug_visualizer_.stop();
 }
 
 void PipelineCoordinator::stop() {
@@ -144,6 +152,7 @@ void PipelineCoordinator::stop() {
         return;
     }
 
+#ifdef DEBUG_VIEWS
     const bool had_active_runtime =
         gaze_worker_.joinable() ||
         somnolence_worker_.joinable() ||
@@ -153,6 +162,7 @@ void PipelineCoordinator::stop() {
     if (had_active_runtime) {
         std::cout << "[*] Stopping pipeline components...\n" << std::flush;
     }
+#endif
 
     request_shutdown();
     camera_capture_.stop();
@@ -166,6 +176,7 @@ void PipelineCoordinator::stop() {
 
     console_controller_.stop();
 
+#ifdef DEBUG_VIEWS
     if (had_active_runtime) {
         std::cout << "\n==================== PIPELINE BENCHMARK SUMMARY ====================\n";
         print_benchmark_stats("Distraction Worker [Compute]   ", gaze_work_ms_);
@@ -176,6 +187,7 @@ void PipelineCoordinator::stop() {
         std::cout << "====================================================================\n\n" << std::flush;
         std::cout << "[+] Clean shutdown completed successfully.\n" << std::flush;
     }
+#endif
 }
 
 int PipelineCoordinator::run(const std::atomic<bool>& external_shutdown) {
@@ -189,13 +201,16 @@ int PipelineCoordinator::run(const std::atomic<bool>& external_shutdown) {
 
     // Fail-fast camera initialization (single device open)
     if (!camera_capture_.start()) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[!] Fatal: Could not initialize camera capture worker.\n" << std::flush;
+#endif
         stop();
         return 1;
     }
 
     console_controller_.start();
 
+#ifdef DEBUG_VIEWS
     const SystemState startup_state = system_state_.load();
     const bool is_moving_startup = (startup_state == SystemState::MovingUncalibrated ||
                                     startup_state == SystemState::MovingCalibrated);
@@ -206,6 +221,7 @@ int PipelineCoordinator::run(const std::atomic<bool>& external_shutdown) {
               << "    Confidence threshold  : " << (options_.conf_threshold * 100.0f) << "%\n"
               << "    Mode window duration  : " << options_.window_ms << " ms\n"
               << "    LSTM sequence length  : " << options_.seq_len << " frames\n\n" << std::flush;
+#endif
 
     // Supervisory control loop
     main_loop_ms_.reserve(18000);
@@ -228,7 +244,18 @@ int PipelineCoordinator::run(const std::atomic<bool>& external_shutdown) {
             break;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const ConsoleCommand gui_cmd = debug_visualizer_.render_step(
+            system_state_.load(),
+            alert_manager_.current_driver_state()
+        );
+        if (gui_cmd != ConsoleCommand::None) {
+            handle_console_command(gui_cmd);
+            if (shutdown_requested_.load()) {
+                const auto t_iter_end = std::chrono::steady_clock::now();
+                main_loop_ms_.push_back(std::chrono::duration<double, std::milli>(t_iter_end - t_iter_start).count());
+                break;
+            }
+        }
 
         const auto t_iter_end = std::chrono::steady_clock::now();
         main_loop_ms_.push_back(std::chrono::duration<double, std::milli>(t_iter_end - t_iter_start).count());
@@ -243,28 +270,40 @@ void PipelineCoordinator::handle_console_command(ConsoleCommand cmd) {
         case ConsoleCommand::ToggleMovement: {
             switch (system_state_.load()) {
                 case SystemState::Calibrating:
+#ifdef DEBUG_VIEWS
                     std::cout << "\n[VEHICLE] Ignored: Cannot change movement state while calibration is in progress.\n" << std::flush;
+#endif
                     return;
                 case SystemState::MovingUncalibrated:
                     system_state_.store(SystemState::StationaryUncalibrated);
                     alert_manager_.reset();
                     gaze_reset_requested_.store(true, std::memory_order_release);
+                    debug_visualizer_.reset();
+#ifdef DEBUG_VIEWS
                     std::cout << "\n[VEHICLE] State changed: STATIONARY (Detections paused)\n" << std::flush;
+#endif
                     return;
                 case SystemState::MovingCalibrated:
                     system_state_.store(SystemState::StationaryCalibrated);
                     alert_manager_.reset();
                     gaze_reset_requested_.store(true, std::memory_order_release);
+                    debug_visualizer_.reset();
+#ifdef DEBUG_VIEWS
                     std::cout << "\n[VEHICLE] State changed: STATIONARY (Detections paused)\n" << std::flush;
+#endif
                     return;
                 case SystemState::StationaryUncalibrated:
                     system_state_.store(SystemState::MovingUncalibrated);
+#ifdef DEBUG_VIEWS
                     std::cout << "\n[VEHICLE] State changed: MOVING\n"
                               << "[!] Not calibrated: detections disabled. Stop ('m') and calibrate ('c').\n" << std::flush;
+#endif
                     return;
                 case SystemState::StationaryCalibrated:
                     system_state_.store(SystemState::MovingCalibrated);
+#ifdef DEBUG_VIEWS
                     std::cout << "\n[VEHICLE] State changed: MOVING\n" << std::flush;
+#endif
                     return;
             }
             return;
@@ -272,21 +311,29 @@ void PipelineCoordinator::handle_console_command(ConsoleCommand cmd) {
         case ConsoleCommand::Calibrate: {
             const SystemState s = system_state_.load();
             if (s == SystemState::MovingUncalibrated || s == SystemState::MovingCalibrated) {
+#ifdef DEBUG_VIEWS
                 std::cout << "\n[CALIBRATION] Ignored: Calibration is only permitted while vehicle is stationary.\n" << std::flush;
+#endif
                 return;
             }
             if (s == SystemState::Calibrating) {
+#ifdef DEBUG_VIEWS
                 std::cout << "\n[CALIBRATION] Ignored: Calibration already in progress.\n" << std::flush;
+#endif
                 return;
             }
 
+#ifdef DEBUG_VIEWS
             std::cout << "\n[CALIBRATION] Starting coordinated calibration sequence...\n"
                       << "              Follow acoustic guidance instructions.\n" << std::flush;
+#endif
             system_state_.store(SystemState::Calibrating);
             return;
         }
         case ConsoleCommand::Quit:
+#ifdef DEBUG_VIEWS
             std::cout << "\n[*] Quit requested via console. Initiating clean shutdown...\n" << std::flush;
+#endif
             request_shutdown();
             return;
         case ConsoleCommand::None:
@@ -341,11 +388,24 @@ void PipelineCoordinator::gaze_worker_loop() {
             alert_manager_.update_gaze(result);
             const auto t_end = std::chrono::steady_clock::now();
 
-            gaze_work_ms_.push_back(std::chrono::duration<double, std::milli>(t_work_end - t_work_start).count());
+            const double work_ms = std::chrono::duration<double, std::milli>(t_work_end - t_work_start).count();
+            debug_visualizer_.update_gaze(
+                result,
+                gaze_detector_.buffer_size(),
+                model_config_.seq_len,
+                alert_config_.min_confidence,
+                work_ms
+            );
+
+            gaze_work_ms_.push_back(work_ms);
             gaze_cycle_ms_.push_back(std::chrono::duration<double, std::milli>(t_end - t_iter_start).count());
         }
     } catch (const std::exception& e) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[!] GazeWorker Exception: " << e.what() << "\n" << std::flush;
+#else
+        (void)e;
+#endif
     }
 }
 
@@ -365,7 +425,8 @@ void PipelineCoordinator::somnolence_worker_loop() {
                     *mailbox_somno_,
                     face_detector_,
                     audio_manager_,
-                    shutdown_requested_
+                    shutdown_requested_,
+                    &debug_visualizer_
                 };
                 auto result = run_calibration(calib_ctx, calib_audio_config_);
                 if (result.has_value()) {
@@ -376,7 +437,9 @@ void PipelineCoordinator::somnolence_worker_loop() {
                     face_detector_.reset();
                     was_calibrated = true;
                     system_state_.store(SystemState::StationaryCalibrated);
+#ifdef DEBUG_VIEWS
                     std::cout << "[+] System calibrated. Press 'm' to switch to MOVING and enable monitoring.\n" << std::flush;
+#endif
                 } else {
                     system_state_.store(was_calibrated ? SystemState::StationaryCalibrated
                                                        : SystemState::StationaryUncalibrated);
@@ -399,12 +462,15 @@ void PipelineCoordinator::somnolence_worker_loop() {
 
             const auto t_work_start = std::chrono::steady_clock::now();
             auto landmarks_opt = face_detector_.detect(frame, t_work_start);
+            EarAssessment ear_res{};
+            HeadOrientationAssessment head_res{};
+            MarAssessment mar_res{};
             if (landmarks_opt.has_value()) {
                 const auto& landmarks = landmarks_opt.value();
 
-                EarAssessment ear_res = ear_detector_.process(landmarks, t_work_start);
-                HeadOrientationAssessment head_res = head_detector_.process(landmarks, t_work_start);
-                MarAssessment mar_res = mar_detector_.process(landmarks, t_work_start);
+                ear_res = ear_detector_.process(landmarks, t_work_start);
+                head_res = head_detector_.process(landmarks, t_work_start);
+                mar_res = mar_detector_.process(landmarks, t_work_start);
 
                 alert_manager_.update_somnolence(ear_res, head_res, mar_res);
             } else {
@@ -412,10 +478,28 @@ void PipelineCoordinator::somnolence_worker_loop() {
             }
 
             const auto t_end = std::chrono::steady_clock::now();
-            somno_work_ms_.push_back(std::chrono::duration<double, std::milli>(t_end - t_work_start).count());
+            const double work_ms = std::chrono::duration<double, std::milli>(t_end - t_work_start).count();
+            debug_visualizer_.update_somnolence(
+                landmarks_opt,
+                ear_res,
+                ear_detector_.thresh_descent(),
+                ear_detector_.thresh_closure(),
+                head_res,
+                mar_res,
+                mar_detector_.config().mar_threshold,
+                work_ms,
+                face_detector_.is_face_missing(),
+                ear_detector_.is_calibrated()
+            );
+
+            somno_work_ms_.push_back(work_ms);
             somno_cycle_ms_.push_back(std::chrono::duration<double, std::milli>(t_end - t_iter_start).count());
         }
     } catch (const std::exception& e) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[!] SomnolenceWorker Exception: " << e.what() << "\n" << std::flush;
+#else
+        (void)e;
+#endif
     }
 }

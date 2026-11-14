@@ -61,6 +61,7 @@ void EarDetector::apply_baseline(
     perclos_start_time_ = now;
     calibrated_ = true;
 
+#ifdef DEBUG_VIEWS
     std::cout << "\n=======================================================\n"
               << "[+] EarDetector: Calibration Complete!\n"
               << "    Open Baseline    : " << std::fixed << std::setprecision(3) << ear_base_open_ << "\n"
@@ -68,6 +69,7 @@ void EarDetector::apply_baseline(
               << "    Descent Thresh   : " << thresh_descent_ << " (70% aperture)\n"
               << "    Closure Thresh   : " << thresh_closure_ << " (20% aperture)\n"
               << "=======================================================\n" << std::flush;
+#endif
 }
 
 EarAssessment EarDetector::process(

@@ -34,14 +34,18 @@ bool CameraCapture::start() {
     }
 
     if (!cap.isOpened()) {
+#ifdef DEBUG_VIEWS
         std::cerr << "[!] CameraCapture Error: Failed to open video source '" << source_ << "'\n";
+#endif
         return false;
     }
 
     is_running_.store(true);
     // Transfer opened handle directly into worker thread (eliminates double-open cycle)
     worker_thread_ = std::thread(&CameraCapture::capture_loop, this, std::move(cap), is_numeric);
+#ifdef DEBUG_VIEWS
     std::cout << "[+] CameraCapture thread started on source: " << source_ << "\n";
+#endif
     return true;
 }
 
@@ -54,7 +58,9 @@ void CameraCapture::stop() {
     }
     if (worker_thread_.joinable()) {
         worker_thread_.join();
+#ifdef DEBUG_VIEWS
         std::cout << "[*] CameraCapture thread stopped cleanly.\n";
+#endif
     }
 }
 
@@ -75,7 +81,9 @@ void CameraCapture::capture_loop(cv::VideoCapture cap, bool is_numeric) {
         auto frame_start = std::chrono::steady_clock::now();
 
         if (!cap.read(frame) || frame.empty()) {
+#ifdef DEBUG_VIEWS
             std::cout << "[*] CameraCapture: Stream reached end-of-file or frame grab failed.\n";
+#endif
             break;
         }
 

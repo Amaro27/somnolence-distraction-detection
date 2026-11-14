@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AudioManager.hpp"
+#include "DebugVisualizer.hpp"
 #include "FaceLandmarkDetector.hpp"
 #include "ThreadSafeMailbox.hpp"
 #include "Types.hpp"
@@ -17,6 +18,7 @@ struct CalibrationContext {
     FaceLandmarkDetector&       face;
     AudioManager&               audio;
     const std::atomic<bool>&    shutdown; // Only exit path ('q' / SIGINT)
+    DebugVisualizer*            visualizer{nullptr};
 };
 
 /**

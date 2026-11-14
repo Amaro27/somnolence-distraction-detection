@@ -23,8 +23,20 @@ else()
     endif()
 endif()
 
+if(DEFINED ENABLE_DEBUG_VIEWS)
+    set(_use_debug_views ${ENABLE_DEBUG_VIEWS})
+elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(_use_debug_views ON)
+else()
+    set(_use_debug_views OFF)
+endif()
+
 find_package(Threads REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio dnn)
+if(_use_debug_views)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio dnn)
+else()
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio dnn)
+endif()
 find_package(dlib REQUIRED)
 
 set(MODULAR_DISTRACTION_SOURCES
@@ -34,6 +46,7 @@ set(MODULAR_DISTRACTION_SOURCES
     src/AlertLogic.cpp
     src/AlertManager.cpp
     src/ConsoleController.cpp
+    src/DebugVisualizer.cpp
     src/FaceLandmarkDetector.cpp
     src/FaceGeometry.cpp
     src/HeadOrientationDetector.cpp
@@ -47,6 +60,10 @@ set(MODULAR_DISTRACTION_SOURCES
 )
 
 add_executable(modular_distraction ${MODULAR_DISTRACTION_SOURCES})
+
+if(_use_debug_views)
+    target_compile_definitions(modular_distraction PRIVATE DEBUG_VIEWS)
+endif()
 
 target_include_directories(modular_distraction PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include

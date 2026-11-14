@@ -13,7 +13,9 @@ void HeadOrientationDetector::apply_baseline(double neutral_rho) {
     calibrated_ = true;
     in_droop_ = false;
     droop_cue_emitted_ = false;
+#ifdef DEBUG_VIEWS
     std::cout << "[HeadOrientationDetector] Calibration complete. Baseline rho: " << baseline_rho_ << "\n";
+#endif
 }
 
 void HeadOrientationDetector::reset() {

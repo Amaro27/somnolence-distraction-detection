@@ -14,6 +14,7 @@ std::string log_somnolence_triggers_and_reason(
     const std::string& trigger_reason,
     const std::vector<CueEvent>& cues_snapshot
 ) {
+#ifdef DEBUG_VIEWS
     for (const auto& cue : strong_cues_triggered) {
         const char* cue_name = AlertLogic::cue_type_to_string(cue.type);
         std::cout << "\n[ALERT] CRITICAL DROWSINESS (STRONG CUE): " << cue_name
@@ -30,6 +31,9 @@ std::string log_somnolence_triggers_and_reason(
                       << " (" << cues_snapshot[i].details << ")\n";
         }
     }
+#else
+    (void)cues_snapshot;
+#endif
 
     if (!strong_cues_triggered.empty()) {
         return std::string("Critical Drowsiness (Strong Cue: ") +
@@ -57,9 +61,14 @@ bool consume_rate_cooldown(
 }
 
 void log_auditory_alert(float gain_db, const std::string& reason) {
+#ifdef DEBUG_VIEWS
     std::cout << "[AUDITORY ALERT] Tone pulse emitted"
               << " | Gain: " << std::fixed << std::setprecision(1) << gain_db << " dB"
               << " | Reason: " << reason << "\n";
+#else
+    (void)gain_db;
+    (void)reason;
+#endif
 }
 
 } // namespace
@@ -125,17 +134,24 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
         }
     }
 
+#ifdef DEBUG_VIEWS
     if (warmed_up_now) {
         std::cout << "[+] AlertManager: Initial " << warmup_secs
                   << "s temporal window filled. Active mode evaluation started.\n";
     }
+#else
+    (void)warmed_up_now;
+    (void)warmup_secs;
+#endif
 
     if (trigger_distraction_alert) {
+#ifdef DEBUG_VIEWS
         std::cout << "\n[ALERT] Distraction detected: Driver looking away from road!\n"
                   << "        Mode: NotLookingRoad (" << assessment.not_looking_votes << "/"
                   << assessment.total_votes << " votes in 2.0s)\n"
                   << "        Avg Looking Probability: " << std::fixed << std::setprecision(1)
                   << (assessment.avg_looking_prob * 100.0f) << "%\n";
+#endif
         log_auditory_alert(config_.audio_config.distraction_gain_db, "Driver looking away from road");
         audio_.play_blocking(
             config_.audio_config.distraction_sound_path,
@@ -150,9 +166,11 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
             current_state_ = DriverState::Safe;
         }
     } else if (transitioned_to_safe) {
+#ifdef DEBUG_VIEWS
         std::cout << "\n[INFO] Alert cleared: Driver attention returned to road.\n"
                   << "       Mode: LookingRoad (" << assessment.looking_votes << "/"
                   << assessment.total_votes << " votes in 2.0s)\n";
+#endif
         audio_.stop();
     }
 }
@@ -261,7 +279,9 @@ void AlertManager::update_somnolence(
         strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot
     );
     if (cleared_drowsiness) {
+#ifdef DEBUG_VIEWS
         std::cout << "\n[INFO] Drowsiness alert cleared: Driver physiological features returned to normal.\n";
+#endif
         audio_.stop();
     } else if (emit_audio) {
         dispatch_auditory_alert(config_.audio_config.drowsiness_sound_path, gain_db, reason);
@@ -324,7 +344,9 @@ void AlertManager::reset() {
         initial_warmup_logged_ = false;
     }
     audio_.stop();
+#ifdef DEBUG_VIEWS
     std::cout << "[*] AlertManager state reset to Safe.\n";
+#endif
 }
 
 DriverState AlertManager::current_driver_state() const {

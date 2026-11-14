@@ -4,6 +4,7 @@
 #include "AudioManager.hpp"
 #include "CameraCapture.hpp"
 #include "ConsoleController.hpp"
+#include "DebugVisualizer.hpp"
 #include "EarDetector.hpp"
 #include "FaceLandmarkDetector.hpp"
 #include "GazeDetector.hpp"
@@ -102,6 +103,7 @@ private:
     HeadOrientationDetector head_detector_;
     EarDetector ear_detector_;
     MarDetector mar_detector_;
+    DebugVisualizer debug_visualizer_;
     CameraCapture camera_capture_;
     ConsoleController console_controller_;
 
