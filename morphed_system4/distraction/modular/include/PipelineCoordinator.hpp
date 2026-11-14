@@ -18,6 +18,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 #include <opencv2/core/mat.hpp>
 
 /**
@@ -107,4 +108,11 @@ private:
     // Worker threads
     std::thread gaze_worker_;
     std::thread somnolence_worker_;
+
+    // Lightweight per-thread runtime timing samples (written by owning thread, read after join in stop())
+    std::vector<double> gaze_work_ms_;
+    std::vector<double> gaze_cycle_ms_;
+    std::vector<double> somno_work_ms_;
+    std::vector<double> somno_cycle_ms_;
+    std::vector<double> main_loop_ms_;
 };

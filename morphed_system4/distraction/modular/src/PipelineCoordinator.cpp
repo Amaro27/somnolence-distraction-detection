@@ -1,9 +1,67 @@
 #include "PipelineCoordinator.hpp"
 #include "Calibration.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <iomanip>
 #include <iostream>
+#include <numeric>
 #include <utility>
+
+namespace {
+void print_benchmark_stats(const char* name, std::vector<double>& samples_ms) {
+    if (samples_ms.empty()) {
+        std::cout << "  " << name << ": (0 samples - no active frames processed)\n";
+        return;
+    }
+
+    std::sort(samples_ms.begin(), samples_ms.end());
+    const size_t n = samples_ms.size();
+
+    const double sum = std::accumulate(samples_ms.begin(), samples_ms.end(), 0.0);
+    const double mean_ms = sum / static_cast<double>(n);
+
+    double sq_diff_sum = 0.0;
+    for (double v : samples_ms) {
+        const double d = v - mean_ms;
+        sq_diff_sum += d * d;
+    }
+    const double stddev_ms = (n > 1) ? std::sqrt(sq_diff_sum / static_cast<double>(n - 1)) : 0.0;
+
+    const double median_ms = (n % 2 != 0)
+                                 ? samples_ms[n / 2]
+                                 : 0.5 * (samples_ms[n / 2 - 1] + samples_ms[n / 2]);
+    const size_t p95_idx = (n == 1)
+                               ? 0
+                               : std::min(n - 1, static_cast<size_t>(std::ceil(0.95 * static_cast<double>(n))) - 1);
+    const double p95_ms = samples_ms[p95_idx];
+    const double min_ms = samples_ms.front();
+    const double max_ms = samples_ms.back();
+
+    auto to_fps = [](double ms) -> double { return (ms > 1e-6) ? (1000.0 / ms) : 0.0; };
+
+    const std::ios_base::fmtflags old_flags = std::cout.flags();
+    const std::streamsize old_prec = std::cout.precision();
+
+    std::cout << std::fixed << std::setprecision(2)
+              << "  " << name << " (N=" << n << ")\n"
+              << "    Latency (ms) : Mean=" << mean_ms
+              << " | Std=" << stddev_ms
+              << " | Median=" << median_ms
+              << " | P95=" << p95_ms
+              << " | Min=" << min_ms
+              << " | Max=" << max_ms << "\n"
+              << "    Throughput   : Mean=" << to_fps(mean_ms) << " FPS"
+              << " | Median=" << to_fps(median_ms) << " FPS"
+              << " | P5=" << to_fps(p95_ms) << " FPS"
+              << " | Min=" << to_fps(max_ms) << " FPS"
+              << " | Max=" << to_fps(min_ms) << " FPS\n";
+
+    std::cout.flags(old_flags);
+    std::cout.precision(old_prec);
+}
+} // namespace
 
 LSTMInferenceConfig PipelineCoordinator::build_model_config(const Options& options) {
     LSTMInferenceConfig cfg;
@@ -112,6 +170,13 @@ void PipelineCoordinator::stop() {
     console_controller_.stop();
 
     if (had_active_runtime) {
+        std::cout << "\n==================== PIPELINE BENCHMARK SUMMARY ====================\n";
+        print_benchmark_stats("Distraction Worker [Compute]   ", gaze_work_ms_);
+        print_benchmark_stats("Distraction Worker [Full Loop] ", gaze_cycle_ms_);
+        print_benchmark_stats("Somnolence Worker  [Compute]   ", somno_work_ms_);
+        print_benchmark_stats("Somnolence Worker  [Full Loop] ", somno_cycle_ms_);
+        print_benchmark_stats("Main Supervisory Loop          ", main_loop_ms_);
+        std::cout << "====================================================================\n\n" << std::flush;
         std::cout << "[+] Clean shutdown completed successfully.\n" << std::flush;
     }
 }
@@ -146,20 +211,30 @@ int PipelineCoordinator::run(const std::atomic<bool>& external_shutdown) {
               << "    LSTM sequence length  : " << options_.seq_len << " frames\n\n" << std::flush;
 
     // Supervisory control loop
+    main_loop_ms_.reserve(18000);
     while (!shutdown_requested_.load() && !external_shutdown.load()) {
+        const auto t_iter_start = std::chrono::steady_clock::now();
+
         const ConsoleCommand cmd = console_controller_.poll_command();
         if (cmd != ConsoleCommand::None) {
             handle_console_command(cmd);
             if (shutdown_requested_.load()) {
+                const auto t_iter_end = std::chrono::steady_clock::now();
+                main_loop_ms_.push_back(std::chrono::duration<double, std::milli>(t_iter_end - t_iter_start).count());
                 break;
             }
         }
 
         if (!camera_capture_.is_running() && mailbox_gaze_->is_stopped() && mailbox_somno_->is_stopped()) {
+            const auto t_iter_end = std::chrono::steady_clock::now();
+            main_loop_ms_.push_back(std::chrono::duration<double, std::milli>(t_iter_end - t_iter_start).count());
             break;
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        const auto t_iter_end = std::chrono::steady_clock::now();
+        main_loop_ms_.push_back(std::chrono::duration<double, std::milli>(t_iter_end - t_iter_start).count());
     }
 
     stop();
@@ -228,7 +303,12 @@ void PipelineCoordinator::gaze_worker_loop() {
         cv::Mat input_blob(4, blob_dims, CV_32F);
         cv::Mat frame;
 
+        gaze_work_ms_.reserve(18000);
+        gaze_cycle_ms_.reserve(18000);
+
         while (!shutdown_requested_.load()) {
+            const auto t_iter_start = std::chrono::steady_clock::now();
+
             // In-band thread-confined reset (zero cross-thread data race on GazeDetector)
             if (gaze_reset_requested_.exchange(false, std::memory_order_acq_rel)) {
                 gaze_detector_.reset();
@@ -251,6 +331,7 @@ void PipelineCoordinator::gaze_worker_loop() {
                 continue;
             }
 
+            const auto t_work_start = std::chrono::steady_clock::now();
             preprocessor_.process(frame, input_blob);
 
             DistractionDetectionResult result = gaze_detector_.infer_frame(
@@ -260,6 +341,10 @@ void PipelineCoordinator::gaze_worker_loop() {
             );
 
             alert_manager_.update_gaze(result);
+            const auto t_end = std::chrono::steady_clock::now();
+
+            gaze_work_ms_.push_back(std::chrono::duration<double, std::milli>(t_end - t_work_start).count());
+            gaze_cycle_ms_.push_back(std::chrono::duration<double, std::milli>(t_end - t_iter_start).count());
         }
     } catch (const std::exception& e) {
         std::cerr << "[!] GazeWorker Exception: " << e.what() << "\n" << std::flush;
@@ -271,7 +356,12 @@ void PipelineCoordinator::somnolence_worker_loop() {
         cv::Mat frame;
         bool was_calibrated = false;
 
+        somno_work_ms_.reserve(18000);
+        somno_cycle_ms_.reserve(18000);
+
         while (!shutdown_requested_.load()) {
+            const auto t_iter_start = std::chrono::steady_clock::now();
+
             if (system_state_.load() == SystemState::Calibrating) {
                 CalibrationContext calib_ctx{
                     *mailbox_somno_,
@@ -309,28 +399,29 @@ void PipelineCoordinator::somnolence_worker_loop() {
                 continue;
             }
 
-            auto now = std::chrono::steady_clock::now();
+            const auto t_work_start = std::chrono::steady_clock::now();
+            auto landmarks_opt = face_detector_.detect(frame, t_work_start);
+            if (landmarks_opt.has_value()) {
+                const auto& landmarks = landmarks_opt.value();
 
-            auto landmarks_opt = face_detector_.detect(frame, now);
-            if (!landmarks_opt.has_value()) {
-                continue;
+                EarAssessment ear_res = ear_detector_.process(landmarks, t_work_start);
+                HeadOrientationAssessment head_res = head_detector_.process(landmarks, t_work_start);
+                MarAssessment mar_res = mar_detector_.process(landmarks, t_work_start);
+
+                for (const auto& cue : ear_res.cues) {
+                    alert_manager_.register_cue(cue.type, cue.strength, cue.details);
+                }
+                if (head_res.cue.has_value()) {
+                    alert_manager_.register_cue(head_res.cue->type, head_res.cue->strength, head_res.cue->details);
+                }
+                if (mar_res.cue.has_value()) {
+                    alert_manager_.register_cue(mar_res.cue->type, mar_res.cue->strength, mar_res.cue->details);
+                }
             }
 
-            const auto& landmarks = landmarks_opt.value();
-
-            EarAssessment ear_res = ear_detector_.process(landmarks, now);
-            HeadOrientationAssessment head_res = head_detector_.process(landmarks, now);
-            MarAssessment mar_res = mar_detector_.process(landmarks, now);
-
-            for (const auto& cue : ear_res.cues) {
-                alert_manager_.register_cue(cue.type, cue.strength, cue.details);
-            }
-            if (head_res.cue.has_value()) {
-                alert_manager_.register_cue(head_res.cue->type, head_res.cue->strength, head_res.cue->details);
-            }
-            if (mar_res.cue.has_value()) {
-                alert_manager_.register_cue(mar_res.cue->type, mar_res.cue->strength, mar_res.cue->details);
-            }
+            const auto t_end = std::chrono::steady_clock::now();
+            somno_work_ms_.push_back(std::chrono::duration<double, std::milli>(t_end - t_work_start).count());
+            somno_cycle_ms_.push_back(std::chrono::duration<double, std::milli>(t_end - t_iter_start).count());
         }
     } catch (const std::exception& e) {
         std::cerr << "[!] SomnolenceWorker Exception: " << e.what() << "\n" << std::flush;
