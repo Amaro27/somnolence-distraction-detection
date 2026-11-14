@@ -34,6 +34,7 @@ set(MODULAR_DISTRACTION_SOURCES
     src/AlertManager.cpp
     src/ConsoleController.cpp
     src/FaceLandmarkDetector.cpp
+    src/FaceGeometry.cpp
     src/HeadOrientationDetector.cpp
     src/EarDetector.cpp
     src/MarDetector.cpp
