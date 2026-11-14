@@ -1,9 +1,9 @@
 #include "GazeDetector.hpp"
+#include "PathUtils.hpp"
 
 #include <cmath>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 
 namespace {
@@ -12,25 +12,14 @@ bool file_exists(const std::string& path) {
     std::error_code ec;
     return std::filesystem::exists(path, ec);
 }
-
-std::string find_model_path(const std::string& path) {
-    if (file_exists(path)) return path;
-    // When executing from build directory (out/build/<preset>/)
-    if (file_exists("../../../" + path)) return "../../../" + path;
-    // When executing from workspace root
-    if (file_exists("morphed_system4/distraction/modular/" + path)) {
-        return "morphed_system4/distraction/modular/" + path;
-    }
-    return path;
-}
 } // namespace
 
 GazeDetector::GazeDetector(LSTMInferenceConfig config)
     : config_(std::move(config)) {}
 
 bool GazeDetector::initialize() {
-    config_.backbone_path = find_model_path(config_.backbone_path);
-    config_.head_path = find_model_path(config_.head_path);
+    config_.backbone_path = PathUtils::resolve_asset_path(config_.backbone_path);
+    config_.head_path = PathUtils::resolve_asset_path(config_.head_path);
 
     if (!file_exists(config_.backbone_path)) {
         std::cerr << "[!] GazeDetector Error: Backbone model not found at '" << config_.backbone_path << "'\n";
@@ -56,10 +45,11 @@ bool GazeDetector::initialize() {
         return false;
     }
 
-    // Allocate 3D sequence blob for LSTM head: (1 x seq_len x feature_dim)
+    // Allocate 3D sequence blob and flat ring buffer once (zero hot-path allocations)
     const int seq_dims[3] = {1, static_cast<int>(config_.seq_len.value), static_cast<int>(config_.feature_dim)};
     seq_blob_.create(3, seq_dims, CV_32F);
     seq_blob_.setTo(cv::Scalar(0.0f));
+    ring_buffer_.assign(config_.seq_len.value * config_.feature_dim, 0.0f);
 
     // Pre-warm both networks with dummy forward pass to eliminate first-frame latency
     try {
@@ -83,23 +73,30 @@ bool GazeDetector::initialize() {
     return true;
 }
 
-void GazeDetector::reset() {
-    feature_buffer_.clear();
+void GazeDetector::reset() noexcept {
+    ring_head_ = 0;
+    ring_count_ = 0;
 }
 
-void GazeDetector::pack_sequence_blob() {
+void GazeDetector::pack_sequence_blob() noexcept {
     float* dst = seq_blob_.ptr<float>(0);
-    const int seq_len = static_cast<int>(config_.seq_len.value);
-    const int feature_dim = static_cast<int>(config_.feature_dim);
-    const int buf_len = static_cast<int>(feature_buffer_.size());
-    const int pad_count = seq_len - buf_len;
+    const size_t seq_len = config_.seq_len.value;
+    const size_t feature_dim = config_.feature_dim;
+    const size_t buf_len = ring_count_;
+    if (buf_len == 0) return;
+
+    const size_t oldest_idx = (buf_len < seq_len) ? 0 : ring_head_;
+    const size_t pad_count = seq_len - buf_len;
 
     // During warmup frames (buf_len < seq_len), pad leading slots with earliest feature
-    for (int t = 0; t < pad_count; ++t) {
-        std::memcpy(dst + t * feature_dim, feature_buffer_.front().data(), feature_dim * sizeof(float));
+    const float* oldest_ptr = ring_buffer_.data() + oldest_idx * feature_dim;
+    for (size_t t = 0; t < pad_count; ++t) {
+        std::memcpy(dst + t * feature_dim, oldest_ptr, feature_dim * sizeof(float));
     }
-    for (int t = 0; t < buf_len; ++t) {
-        std::memcpy(dst + (pad_count + t) * feature_dim, feature_buffer_[t].data(), feature_dim * sizeof(float));
+    for (size_t t = 0; t < buf_len; ++t) {
+        const size_t slot = (oldest_idx + t) % seq_len;
+        const float* src_ptr = ring_buffer_.data() + slot * feature_dim;
+        std::memcpy(dst + (pad_count + t) * feature_dim, src_ptr, feature_dim * sizeof(float));
     }
 }
 
@@ -112,14 +109,16 @@ DistractionDetectionResult GazeDetector::infer_frame(
     net_backbone_.setInput(input_blob);
     cv::Mat feat_mat = net_backbone_.forward();
 
-    // 2. Extract 512-d feature vector and maintain circular buffer
-    std::vector<float> feat_vec(config_.feature_dim);
-    std::memcpy(feat_vec.data(), feat_mat.ptr<float>(0), config_.feature_dim * sizeof(float));
+    // 2. Write 512-d feature directly into pre-allocated flat ring buffer
+    const size_t seq_len = config_.seq_len.value;
+    const size_t feature_dim = config_.feature_dim;
+    float* slot_ptr = ring_buffer_.data() + ring_head_ * feature_dim;
+    std::memcpy(slot_ptr, feat_mat.ptr<float>(0), feature_dim * sizeof(float));
 
-    if (feature_buffer_.size() >= config_.seq_len.value) {
-        feature_buffer_.pop_front();
+    ring_head_ = (ring_head_ + 1) % seq_len;
+    if (ring_count_ < seq_len) {
+        ++ring_count_;
     }
-    feature_buffer_.push_back(std::move(feat_vec));
 
     // 3. Stage 2: Temporal LSTM Head
     pack_sequence_blob();

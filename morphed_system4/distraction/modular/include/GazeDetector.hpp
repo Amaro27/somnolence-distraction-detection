@@ -3,7 +3,6 @@
 #include "Types.hpp"
 
 #include <array>
-#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,17 +51,17 @@ public:
     /**
      * @brief Resets the temporal feature circular buffer.
      */
-    void reset();
+    void reset() noexcept;
 
     /**
      * @brief Returns the number of accumulated frames currently in the LSTM circular buffer.
      */
-    size_t buffer_size() const { return feature_buffer_.size(); }
+    size_t buffer_size() const noexcept { return ring_count_; }
 
     const LSTMInferenceConfig& config() const { return config_; }
 
 private:
-    void pack_sequence_blob();
+    void pack_sequence_blob() noexcept;
 
     LSTMInferenceConfig config_;
     cv::dnn::Net net_backbone_;
@@ -71,6 +70,8 @@ private:
     // 3D sequence blob for LSTM head: (1 x seq_len x feature_dim)
     cv::Mat seq_blob_;
 
-    // Circular FIFO queue of 512-d frame feature embeddings
-    std::deque<std::vector<float>> feature_buffer_;
+    // Flat pre-allocated circular buffer (Zero heap allocations on hot path)
+    std::vector<float> ring_buffer_;
+    size_t ring_head_{0};
+    size_t ring_count_{0};
 };

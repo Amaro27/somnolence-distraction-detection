@@ -1,32 +1,15 @@
 #include "Calibration.hpp"
-#include "EarDetector.hpp"
-#include "HeadOrientationDetector.hpp"
+#include "FaceGeometry.hpp"
+#include "MathUtils.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <functional>
 #include <iostream>
-#include <numeric>
 #include <thread>
 #include <vector>
 
 namespace {
-
-double compute_mean(const std::vector<double>& vals) {
-    if (vals.empty()) return 0.0;
-    double sum = std::accumulate(vals.begin(), vals.end(), 0.0);
-    return sum / static_cast<double>(vals.size());
-}
-
-double compute_median(std::vector<double> vals) {
-    if (vals.empty()) return 0.0;
-    std::sort(vals.begin(), vals.end());
-    size_t mid = vals.size() / 2;
-    if (vals.size() % 2 == 0) {
-        return (vals[mid - 1] + vals[mid]) * 0.5;
-    }
-    return vals[mid];
-}
 
 bool pause_interruptible(std::chrono::milliseconds dur, const std::atomic<bool>& shutdown) {
     auto start = std::chrono::steady_clock::now();
@@ -115,8 +98,8 @@ std::optional<CalibrationResult> run_calibration(
         first_attempt_p1 = false;
 
         if (!measure_window(ctx, cfg, [&](const FacialLandmarks68& lm) {
-                double ear = EarDetector::compute_ear(lm);
-                double rho = HeadOrientationDetector::compute_rho(lm);
+                double ear = FaceGeometry::compute_ear(lm);
+                double rho = FaceGeometry::compute_rho(lm);
                 if (ear > 0.0) open_samples.push_back(ear);
                 if (rho > 0.0) rho_samples.push_back(rho);
             })) {
@@ -155,7 +138,7 @@ std::optional<CalibrationResult> run_calibration(
         first_attempt_p2 = false;
 
         if (!measure_window(ctx, cfg, [&](const FacialLandmarks68& lm) {
-                double ear = EarDetector::compute_ear(lm);
+                double ear = FaceGeometry::compute_ear(lm);
                 if (ear > 0.0) closed_samples.push_back(ear);
             })) {
             return std::nullopt;
@@ -170,8 +153,8 @@ std::optional<CalibrationResult> run_calibration(
     ctx.audio.play(cfg.success_sound_path);
 
     return CalibrationResult{
-        compute_mean(open_samples),
-        compute_mean(closed_samples),
-        compute_median(rho_samples)
+        MathUtils::compute_mean(open_samples),
+        MathUtils::compute_mean(closed_samples),
+        MathUtils::compute_median(rho_samples)
     };
 }

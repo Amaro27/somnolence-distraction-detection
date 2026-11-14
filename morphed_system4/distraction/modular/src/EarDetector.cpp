@@ -1,28 +1,12 @@
 #include "EarDetector.hpp"
+#include "FaceGeometry.hpp"
+#include "MathUtils.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
-#include <numeric>
-
-namespace {
-double compute_median(std::vector<double>& vals) {
-    if (vals.empty()) return 0.0;
-    std::sort(vals.begin(), vals.end());
-    size_t mid = vals.size() / 2;
-    if (vals.size() % 2 == 0) {
-        return (vals[mid - 1] + vals[mid]) * 0.5;
-    }
-    return vals[mid];
-}
-
-double compute_mean(const std::vector<double>& vals) {
-    if (vals.empty()) return 0.0;
-    double sum = std::accumulate(vals.begin(), vals.end(), 0.0);
-    return sum / static_cast<double>(vals.size());
-}
-} // namespace
 
 EarDetector::EarDetector(EarConfig config)
     : config_(std::move(config)),
@@ -34,6 +18,7 @@ void EarDetector::reset() {
     buffer_raw_.clear();
     buffer_median_.clear();
     perclos_buffer_.clear();
+    closed_samples_count_ = 0;
     in_blink_cycle_ = false;
     reached_effective_closure_ = false;
     microsleep_alarm_active_ = false;
@@ -41,34 +26,8 @@ void EarDetector::reset() {
     last_blink_duration_ms_ = 0.0;
 }
 
-double EarDetector::calculate_single_eye_ear(
-    const cv::Point2f& p0, const cv::Point2f& p1,
-    const cv::Point2f& p2, const cv::Point2f& p3,
-    const cv::Point2f& p4, const cv::Point2f& p5
-) {
-    double dist_a = cv::norm(p1 - p5);
-    double dist_b = cv::norm(p2 - p4);
-    double dist_c = cv::norm(p0 - p3);
-
-    if (dist_c < 1e-6) {
-        return 0.0;
-    }
-
-    return (dist_a + dist_b) / (2.0 * dist_c);
-}
-
 double EarDetector::compute_ear(const FacialLandmarks68& landmarks) {
-    double ear_r = calculate_single_eye_ear(
-        landmarks[36], landmarks[37], landmarks[38],
-        landmarks[39], landmarks[40], landmarks[41]
-    );
-
-    double ear_l = calculate_single_eye_ear(
-        landmarks[42], landmarks[43], landmarks[44],
-        landmarks[45], landmarks[46], landmarks[47]
-    );
-
-    return (ear_r + ear_l) * 0.5;
+    return FaceGeometry::compute_ear(landmarks);
 }
 
 void EarDetector::apply_baseline(
@@ -93,6 +52,7 @@ void EarDetector::apply_baseline(
     for (size_t i = 0; i < config_.mov_avg_window; ++i) buffer_median_.push_back(ear_base_open_);
 
     perclos_buffer_.clear();
+    closed_samples_count_ = 0;
     in_blink_cycle_ = false;
     reached_effective_closure_ = false;
     microsleep_alarm_active_ = false;
@@ -139,16 +99,14 @@ EarAssessment EarDetector::process(
         }
 
         if (buffer_raw_.size() == config_.median_window) {
-            std::vector<double> raw_vec(buffer_raw_.begin(), buffer_raw_.end());
-            double ear_med = compute_median(raw_vec);
+            double ear_med = MathUtils::compute_median(buffer_raw_);
             buffer_median_.push_back(ear_med);
             if (buffer_median_.size() > config_.mov_avg_window) {
                 buffer_median_.pop_front();
             }
 
             if (buffer_median_.size() >= config_.min_samples_for_update) {
-                std::vector<double> med_vec(buffer_median_.begin(), buffer_median_.end());
-                current_ear_open_ = compute_mean(med_vec);
+                current_ear_open_ = MathUtils::compute_mean(buffer_median_);
 
                 double dynamic_range = std::max(config_.min_dynamic_range, current_ear_open_ - ear_base_closed_);
                 thresh_descent_ = ear_base_closed_ + (config_.factor_descenso * dynamic_range);
@@ -162,10 +120,8 @@ EarAssessment EarDetector::process(
         thresh_closure_ = floor_closure_;
     }
 
-    std::vector<double> raw_copy(buffer_raw_.begin(), buffer_raw_.end());
-    double ear_median_val = raw_copy.empty() ? ear_raw : compute_median(raw_copy);
-    std::vector<double> med_copy(buffer_median_.begin(), buffer_median_.end());
-    double ear_mov_avg_val = med_copy.empty() ? ear_raw : compute_mean(med_copy);
+    double ear_median_val = buffer_raw_.empty() ? ear_raw : MathUtils::compute_median(buffer_raw_);
+    double ear_mov_avg_val = buffer_median_.empty() ? ear_raw : MathUtils::compute_mean(buffer_median_);
 
     // 4. Blink Cycle & Micro-Sleep Tracking (>500ms -> Strong cue)
     if (ear_raw < thresh_descent_) {
@@ -217,13 +173,20 @@ EarAssessment EarDetector::process(
         }
     }
 
-    // 5. True Rolling 30-Second PERCLOS Tracking
+    // 5. True Rolling 30-Second PERCLOS Tracking (O(1) running count)
     int is_closed_sample = (ear_raw <= thresh_closure_) ? 1 : 0;
     perclos_buffer_.push_back({now, is_closed_sample});
+    if (is_closed_sample == 1) {
+        ++closed_samples_count_;
+    }
 
     // Prune samples older than perclos_window (default 30 seconds)
     auto perclos_cutoff = now - config_.perclos_window;
     while (!perclos_buffer_.empty() && perclos_buffer_.front().first < perclos_cutoff) {
+        if (perclos_buffer_.front().second == 1) {
+            assert(closed_samples_count_ > 0);
+            --closed_samples_count_;
+        }
         perclos_buffer_.pop_front();
     }
 
@@ -231,13 +194,7 @@ EarAssessment EarDetector::process(
     bool perclos_warmed_up = perclos_monitoring_time >= config_.perclos_window;
 
     if (perclos_warmed_up && !perclos_buffer_.empty()) {
-        size_t closed_count = 0;
-        for (const auto& entry : perclos_buffer_) {
-            if (entry.second == 1) {
-                closed_count++;
-            }
-        }
-        perclos_pct_ = (static_cast<double>(closed_count) / static_cast<double>(perclos_buffer_.size())) * 100.0;
+        perclos_pct_ = (static_cast<double>(closed_samples_count_) / static_cast<double>(perclos_buffer_.size())) * 100.0;
 
         auto elapsed_since_cue = std::chrono::duration_cast<std::chrono::seconds>(now - last_perclos_cue_time_);
         if (elapsed_since_cue >= std::chrono::seconds(5)) {

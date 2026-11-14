@@ -36,8 +36,6 @@ public:
     const MarConfig& config() const { return config_; }
 
 private:
-    double calculate_mar(const FacialLandmarks68& landmarks) const;
-
     MarConfig config_;
     bool in_yawn_{false};
     bool yawn_cue_emitted_{false};

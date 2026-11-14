@@ -1,4 +1,5 @@
 #include "MarDetector.hpp"
+#include "FaceGeometry.hpp"
 
 #include <cmath>
 #include <iomanip>
@@ -16,31 +17,11 @@ void MarDetector::reset() {
     last_confirmed_yawn_ = std::chrono::steady_clock::time_point::min();
 }
 
-double MarDetector::calculate_mar(const FacialLandmarks68& landmarks) const {
-    // Inner lip landmarks (points 60 through 67 in Dlib 68-point model):
-    // Vertical pairs:
-    // P61 (upper right) <-> P67 (lower right)
-    // P62 (upper middle)<-> P66 (lower middle)
-    // P63 (upper left)  <-> P65 (lower left)
-    // Horizontal pair:
-    // P60 (right corner)<-> P64 (left corner)
-    double dist_a = cv::norm(landmarks[61] - landmarks[67]);
-    double dist_b = cv::norm(landmarks[62] - landmarks[66]);
-    double dist_c = cv::norm(landmarks[63] - landmarks[65]);
-    double dist_d = cv::norm(landmarks[60] - landmarks[64]);
-
-    if (dist_d < 1e-6) {
-        return 0.0;
-    }
-
-    return (dist_a + dist_b + dist_c) / (2.0 * dist_d);
-}
-
 MarAssessment MarDetector::process(
     const FacialLandmarks68& landmarks,
     std::chrono::steady_clock::time_point now
 ) {
-    double mar_raw = calculate_mar(landmarks);
+    double mar_raw = FaceGeometry::compute_mar(landmarks);
     double yawn_duration_sec = 0.0;
     std::optional<CueEvent> cue = std::nullopt;
 

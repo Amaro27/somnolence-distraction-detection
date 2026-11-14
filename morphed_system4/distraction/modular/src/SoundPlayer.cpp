@@ -1,8 +1,5 @@
 #include "SoundPlayer.hpp"
-
-#include <filesystem>
-#include <iostream>
-#include <vector>
+#include "PathUtils.hpp"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -17,34 +14,13 @@
 #include <cstdlib>
 #endif
 
-std::string SoundPlayer::resolve_path(const std::string& path) {
-    if (path.empty()) return "";
-    std::error_code ec;
-    if (std::filesystem::exists(path, ec)) {
-        return path;
-    }
+namespace SoundPlayer {
 
-    const std::vector<std::string> prefixes = {
-        "morphed_system4/distraction/modular/",
-        "input/sounds/",
-        "morphed_system4/distraction/modular/input/sounds/",
-        "../",
-        "../../",
-        "../../../",
-        "../../../input/sounds/",
-        "../../../morphed_system4/distraction/modular/input/sounds/"
-    };
-
-    for (const auto& prefix : prefixes) {
-        std::string cand = prefix + path;
-        if (std::filesystem::exists(cand, ec)) {
-            return cand;
-        }
-    }
-    return path;
+std::string resolve_path(const std::string& path) {
+    return PathUtils::resolve_asset_path(path);
 }
 
-bool SoundPlayer::play_async(const std::string& path) {
+bool play_async(const std::string& path) {
     std::string resolved = resolve_path(path);
     if (resolved.empty()) return false;
 
@@ -58,7 +34,7 @@ bool SoundPlayer::play_async(const std::string& path) {
 #endif
 }
 
-bool SoundPlayer::play_sync(const std::string& path) {
+bool play_sync(const std::string& path) {
     std::string resolved = resolve_path(path);
     if (resolved.empty()) return false;
 
@@ -72,10 +48,12 @@ bool SoundPlayer::play_sync(const std::string& path) {
 #endif
 }
 
-void SoundPlayer::stop() {
+void stop() {
 #if defined(_WIN32)
     ::PlaySoundA(NULL, NULL, 0);
 #elif defined(__linux__) || defined(__APPLE__)
     std::system("killall -q aplay paplay > /dev/null 2>&1");
 #endif
 }
+
+} // namespace SoundPlayer

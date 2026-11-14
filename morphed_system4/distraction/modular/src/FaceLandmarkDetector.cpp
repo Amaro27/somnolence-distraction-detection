@@ -1,4 +1,5 @@
 #include "FaceLandmarkDetector.hpp"
+#include "PathUtils.hpp"
 
 #include <dlib/opencv.h>
 #include <filesystem>
@@ -12,20 +13,12 @@ FaceLandmarkDetector::FaceLandmarkDetector(FaceLandmarkConfig config)
       face_lost_start_(std::chrono::steady_clock::now()) {}
 
 std::string FaceLandmarkDetector::resolve_predictor_path() const {
-    const std::vector<std::string> candidates = {
-        config_.predictor_path,
-        "input/shape_predictor_68_face_landmarks.dat",
-        "shape_predictor_68_face_landmarks.dat"
-    };
-
+    std::string resolved = PathUtils::resolve_asset_path(config_.predictor_path);
     std::error_code ec;
-    for (const auto& path : candidates) {
-        if (path.empty()) continue;
-        if (std::filesystem::exists(path, ec)) {
-            return path;
-        }
+    if (!resolved.empty() && std::filesystem::exists(resolved, ec)) {
+        return resolved;
     }
-    return config_.predictor_path;
+    return PathUtils::resolve_asset_path("input/shape_predictor_68_face_landmarks.dat");
 }
 
 bool FaceLandmarkDetector::initialize() {

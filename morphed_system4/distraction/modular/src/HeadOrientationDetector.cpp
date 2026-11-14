@@ -1,8 +1,8 @@
 #include "HeadOrientationDetector.hpp"
+#include "FaceGeometry.hpp"
 
 #include <cmath>
 #include <iostream>
-#include <opencv2/core.hpp>
 
 HeadOrientationDetector::HeadOrientationDetector(HeadOrientationConfig config)
     : config_(config),
@@ -24,32 +24,7 @@ void HeadOrientationDetector::reset() {
 }
 
 double HeadOrientationDetector::compute_rho(const FacialLandmarks68& landmarks) {
-    cv::Point2d p36(landmarks[36].x, landmarks[36].y);
-    cv::Point2d p45(landmarks[45].x, landmarks[45].y);
-
-    cv::Point2d e_mid = (p36 + p45) * 0.5;
-    cv::Point2d v_eyes = p45 - p36;
-    double w_eyes = cv::norm(v_eyes);
-
-    cv::Point2d u_x;
-    cv::Point2d u_y;
-
-    if (w_eyes < 1e-6) {
-        u_x = cv::Point2d(1.0, 0.0);
-        u_y = cv::Point2d(0.0, 1.0);
-    } else {
-        u_x = v_eyes * (1.0 / w_eyes);
-        u_y = cv::Point2d(-u_x.y, u_x.x); // Downward perpendicular
-    }
-
-    cv::Point2d p33(landmarks[33].x, landmarks[33].y);
-    cv::Point2d p8(landmarks[8].x, landmarks[8].y);
-
-    double d_top = (p33 - e_mid).dot(u_y);
-    double d_bottom = (p8 - p33).dot(u_y);
-    double h_face = std::max(d_top + d_bottom, 1e-6);
-
-    return d_top / h_face;
+    return FaceGeometry::compute_rho(landmarks);
 }
 
 HeadOrientationAssessment HeadOrientationDetector::process(

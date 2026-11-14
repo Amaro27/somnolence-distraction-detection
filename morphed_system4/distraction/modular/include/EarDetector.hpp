@@ -63,10 +63,6 @@ public:
     const EarConfig& config() const { return config_; }
 
 private:
-    static double calculate_single_eye_ear(const cv::Point2f& p0, const cv::Point2f& p1,
-                                           const cv::Point2f& p2, const cv::Point2f& p3,
-                                           const cv::Point2f& p4, const cv::Point2f& p5);
-
     EarConfig config_;
     bool calibrated_{false};
 
@@ -93,6 +89,7 @@ private:
 
     // Rolling 30-second PERCLOS tracking state
     std::deque<std::pair<std::chrono::steady_clock::time_point, int>> perclos_buffer_;
+    size_t closed_samples_count_{0};
     std::chrono::steady_clock::time_point perclos_start_time_;
     std::chrono::steady_clock::time_point last_perclos_cue_time_;
     double perclos_pct_{0.0};
