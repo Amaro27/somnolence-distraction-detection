@@ -12,7 +12,7 @@
  * @brief Unified alert coordinator and state machine.
  *
  * Responsibilities:
- * 1. Maintains thread-safe temporal windows and driver/risk state.
+ * 1. Maintains thread-safe temporal windows and driver state.
  * 2. Delegates stateless window evaluation to AlertLogic.
  * 3. Emits console notifications and rate-controlled auditory alerts outside mutex lock.
  * 4. Provides thread-safe interfaces for concurrent distraction and somnolence workers.
@@ -40,15 +40,7 @@ public:
      */
     void register_cue(CueType type, CueStrength strength, const std::string& details = "");
 
-    /**
-     * @brief Emits a rate-controlled non-blocking auditory alert tone.
-     * @param risk Low, Medium, or High risk level.
-     * @param reason Human-readable description of alert trigger.
-     */
-    void emit_auditory_alert(RiskLevel risk, const std::string& reason);
-
     DriverState current_driver_state() const;
-    RiskLevel current_risk() const;
 
     /**
      * @brief Resets temporal history and transitions state back to Safe.
@@ -58,14 +50,13 @@ public:
     AlertConfig config() const;
 
 private:
-    bool try_consume_audio_cooldown(RiskLevel risk, float& out_gain_db) noexcept;
-    void dispatch_auditory_alert(RiskLevel risk, float gain_db, const std::string& reason);
+    bool try_consume_audio_cooldown() noexcept;
+    void dispatch_auditory_alert(const std::string& sound_path, float gain_db, const std::string& reason);
 
     mutable std::mutex mutex_;
     AlertConfig config_;
     AudioManager& audio_;
     DriverState current_state_{DriverState::Safe};
-    RiskLevel current_risk_{RiskLevel::None};
 
     std::deque<DistractionDetectionResult> gaze_window_; // 2.0s sliding window
     std::deque<CueEvent> cue_window_;                    // 2-minute light cue history

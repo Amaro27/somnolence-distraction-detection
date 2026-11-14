@@ -1,8 +1,6 @@
 #include "AudioManager.hpp"
 #include "SoundPlayer.hpp"
 
-#include <utility>
-
 namespace {
 struct ScopedFlagReset {
     std::atomic<bool>& flag;
@@ -10,8 +8,7 @@ struct ScopedFlagReset {
 };
 } // namespace
 
-AudioManager::AudioManager(AuditoryAlertConfig alert_cfg)
-    : alert_cfg_(std::move(alert_cfg)) {
+AudioManager::AudioManager() {
     SoundPlayer::warmup();
 }
 
@@ -20,7 +17,7 @@ AudioManager::~AudioManager() {
 }
 
 void AudioManager::play(const std::string& path, float gain_db) {
-    if (path.empty()) {
+    if (blocking_active_.load() || path.empty()) {
         return;
     }
     std::lock_guard<std::mutex> lock(mutex_);
@@ -39,21 +36,4 @@ bool AudioManager::play_blocking(const std::string& path, float gain_db) {
 
 void AudioManager::stop() {
     SoundPlayer::stop();
-}
-
-void AudioManager::play_alert(RiskLevel risk, float gain_db) {
-    if (blocking_active_.load() || risk == RiskLevel::None) {
-        return;
-    }
-
-    const std::string& path = (risk == RiskLevel::High)
-        ? alert_cfg_.high_risk_sound_path
-        : alert_cfg_.medium_risk_sound_path;
-
-    if (path.empty()) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    SoundPlayer::play_async(path, gain_db);
 }

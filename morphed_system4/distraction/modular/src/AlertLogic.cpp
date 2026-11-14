@@ -58,16 +58,6 @@ SomnolenceAssessment evaluate_somnolence_cues(const std::deque<CueEvent>& cue_wi
     return assessment;
 }
 
-const char* risk_to_string(RiskLevel risk) noexcept {
-    switch (risk) {
-        case RiskLevel::None:   return "NONE";
-        case RiskLevel::Low:    return "LOW";
-        case RiskLevel::Medium: return "MEDIUM";
-        case RiskLevel::High:   return "HIGH";
-    }
-    return "UNKNOWN";
-}
-
 const char* cue_type_to_string(CueType type) noexcept {
     switch (type) {
         case CueType::OffRoadGaze:   return "OffRoadGaze";

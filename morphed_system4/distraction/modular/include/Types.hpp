@@ -30,16 +30,6 @@ enum class DriverState {
 };
 
 /**
- * @brief Prioritized risk level governing auditory alert tone patterns.
- */
-enum class RiskLevel {
-    None,
-    Low,
-    Medium,
-    High
-};
-
-/**
  * @brief Drowsiness cue intensity for multimodal alert evaluation.
  */
 enum class CueStrength {
@@ -150,14 +140,14 @@ struct LSTMInferenceConfig {
 };
 
 /**
- * @brief Configuration for auditory alert tone pulses.
+ * @brief Configuration for auditory alert sounds and cadence.
  */
 struct AuditoryAlertConfig {
     double repetition_rate_hz{1.0}; // Pulses per second
-    float min_gain_db{-21.0f};      // Attenuation in dBFS (0.0 dB = unity, <= -60.0 dB = mute)
-    float max_gain_db{0.0f};        // Maximum alert level in dBFS (0.0 dB = full scale)
-    std::string medium_risk_sound_path{"input/sounds/single-beep-350-hz.wav"};
-    std::string high_risk_sound_path{"input/sounds/Ring06-LOUD.wav"};
+    std::string distraction_sound_path{"input/sounds/single-beep-350-hz.wav"};
+    float distraction_gain_db{0.0f};
+    std::string drowsiness_sound_path{"input/sounds/Ring06-LOUD.wav"};
+    float drowsiness_gain_db{0.0f};
 };
 
 /**

@@ -84,8 +84,6 @@ AlertConfig PipelineCoordinator::build_alert_config(const Options& options) {
     cfg.policy = options.policy;
     cfg.light_cue_window = std::chrono::seconds(120);
     cfg.audio_config.repetition_rate_hz = 1.0;
-    cfg.audio_config.min_gain_db = -21.0f;
-    cfg.audio_config.max_gain_db = 0.0f;
     return cfg;
 }
 
@@ -105,7 +103,7 @@ PipelineCoordinator::PipelineCoordinator(Options options)
                                           : SystemState::StationaryUncalibrated),
       mailbox_gaze_(std::make_shared<ThreadSafeMailbox<cv::Mat>>()),
       mailbox_somno_(std::make_shared<ThreadSafeMailbox<cv::Mat>>()),
-      audio_manager_(alert_config_.audio_config),
+      audio_manager_(),
       alert_manager_(alert_config_, audio_manager_),
       gaze_detector_(model_config_),
       preprocessor_(model_config_.input_dimension),

@@ -36,7 +36,6 @@ struct SomnolenceAssessment {
 SomnolenceAssessment evaluate_somnolence_cues(
     const std::deque<CueEvent>& cue_window);
 
-const char* risk_to_string(RiskLevel risk) noexcept;
 const char* cue_type_to_string(CueType type) noexcept;
 
 } // namespace AlertLogic
