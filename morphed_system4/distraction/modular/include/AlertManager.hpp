@@ -58,8 +58,8 @@ public:
     AlertConfig config() const;
 
 private:
-    bool try_consume_audio_cooldown(RiskLevel risk, float& out_volume) noexcept;
-    void dispatch_auditory_alert(RiskLevel risk, float volume, const std::string& reason);
+    bool try_consume_audio_cooldown(RiskLevel risk, float& out_gain_db) noexcept;
+    void dispatch_auditory_alert(RiskLevel risk, float gain_db, const std::string& reason);
 
     mutable std::mutex mutex_;
     AlertConfig config_;

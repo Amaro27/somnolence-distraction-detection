@@ -154,8 +154,8 @@ struct LSTMInferenceConfig {
  */
 struct AuditoryAlertConfig {
     double repetition_rate_hz{1.0}; // Pulses per second
-    float min_volume{0.2f};
-    float max_volume{1.0f};
+    float min_gain_db{-21.0f};      // Attenuation in dBFS (0.0 dB = unity, <= -60.0 dB = mute)
+    float max_gain_db{0.0f};        // Maximum alert level in dBFS (0.0 dB = full scale)
     std::string medium_risk_sound_path{"input/sounds/single-beep-350-hz.wav"};
     std::string high_risk_sound_path{"input/sounds/Ring06-LOUD.wav"};
 };

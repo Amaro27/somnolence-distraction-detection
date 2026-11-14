@@ -173,7 +173,7 @@ void AlertManager::emit_auditory_alert(RiskLevel risk, const std::string& reason
     }
 }
 
-bool AlertManager::try_consume_audio_cooldown(RiskLevel risk, float& out_volume) noexcept {
+bool AlertManager::try_consume_audio_cooldown(RiskLevel risk, float& out_gain_db) noexcept {
     const auto now = std::chrono::steady_clock::now();
     double min_interval_sec = 1.0;
     if (config_.audio_config.repetition_rate_hz > 0.0) {
@@ -186,20 +186,20 @@ bool AlertManager::try_consume_audio_cooldown(RiskLevel risk, float& out_volume)
     }
 
     last_alert_sound_time_ = now;
-    out_volume = config_.audio_config.min_volume;
+    out_gain_db = config_.audio_config.min_gain_db;
     if (risk == RiskLevel::High) {
-        out_volume = config_.audio_config.max_volume;
+        out_gain_db = config_.audio_config.max_gain_db;
     } else if (risk == RiskLevel::Medium) {
-        out_volume = (config_.audio_config.min_volume + config_.audio_config.max_volume) * 0.5f;
+        out_gain_db = (config_.audio_config.min_gain_db + config_.audio_config.max_gain_db) * 0.5f;
     }
     return true;
 }
 
-void AlertManager::dispatch_auditory_alert(RiskLevel risk, float volume, const std::string& reason) {
+void AlertManager::dispatch_auditory_alert(RiskLevel risk, float gain_db, const std::string& reason) {
     std::cout << "[AUDITORY ALERT] Tone pulse emitted | Risk: " << AlertLogic::risk_to_string(risk)
-              << " | Vol: " << std::fixed << std::setprecision(2) << volume
+              << " | Gain: " << std::fixed << std::setprecision(1) << gain_db << " dB"
               << " | Reason: " << reason << "\n";
-    audio_.play_alert(risk);
+    audio_.play_alert(risk, gain_db);
 }
 
 void AlertManager::reset() {

@@ -85,6 +85,14 @@ int16_t float_to_pcm16(float sample) noexcept {
     return static_cast<int16_t>(std::lround(clamped * 32767.0f));
 }
 
+float db_to_linear_gain(float gain_db) noexcept {
+    constexpr float kSilenceFloorDb = -60.0f;
+    if (gain_db <= kSilenceFloorDb || std::isnan(gain_db)) {
+        return 0.0f;
+    }
+    return std::pow(10.0f, gain_db / 20.0f);
+}
+
 std::vector<int16_t> decode_wav_to_48k_stereo(const std::string& resolved_path) {
     std::ifstream file(resolved_path, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
@@ -242,7 +250,7 @@ public:
         return inserted_it->second.empty() ? nullptr : &inserted_it->second;
     }
 
-    bool trigger(const std::string& resolved_path, bool wait_until_done) {
+    bool trigger(const std::string& resolved_path, bool wait_until_done, float gain_db = 0.0f) {
         const std::vector<int16_t>* samples = get_or_load_pcm(resolved_path);
         if (!samples || samples->empty()) {
             return false;
@@ -252,11 +260,13 @@ public:
             return false;
         }
 
+        const float linear_gain = db_to_linear_gain(gain_db);
         uint64_t my_id = 0;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             active_samples_ = samples;
             sample_cursor_ = 0;
+            active_gain_ = linear_gain;
             my_id = ++playback_id_;
         }
 
@@ -278,6 +288,7 @@ public:
             std::lock_guard<std::mutex> lock(state_mutex_);
             active_samples_ = nullptr;
             sample_cursor_ = 0;
+            active_gain_ = 1.0f;
             ++playback_id_;
         }
         state_cv_.notify_all();
@@ -291,7 +302,20 @@ private:
             if (active_samples_ != nullptr && sample_cursor_ < active_samples_->size()) {
                 const size_t remaining = active_samples_->size() - sample_cursor_;
                 const size_t to_copy = std::min(BLOCK_SAMPLES, remaining);
-                std::memcpy(dst, active_samples_->data() + sample_cursor_, to_copy * sizeof(int16_t));
+                const int16_t* src = active_samples_->data() + sample_cursor_;
+                const float gain = active_gain_;
+                if (std::abs(gain - 1.0f) < 1e-4f) {
+                    std::memcpy(dst, src, to_copy * sizeof(int16_t));
+                } else if (gain <= 0.0f) {
+                    std::memset(dst, 0, to_copy * sizeof(int16_t));
+                } else {
+                    for (size_t i = 0; i < to_copy; ++i) {
+                        const int32_t scaled = static_cast<int32_t>(
+                            std::lround(static_cast<float>(src[i]) * gain)
+                        );
+                        dst[i] = static_cast<int16_t>(std::clamp(scaled, -32768, 32767));
+                    }
+                }
                 if (to_copy < BLOCK_SAMPLES) {
                     std::memset(dst + to_copy, 0, (BLOCK_SAMPLES - to_copy) * sizeof(int16_t));
                 }
@@ -450,6 +474,7 @@ private:
     std::condition_variable state_cv_;
     const std::vector<int16_t>* active_samples_{nullptr};
     size_t sample_cursor_{0};
+    float active_gain_{0.0f};
     uint64_t playback_id_{0};
 
     std::atomic<bool> running_{false};
@@ -492,30 +517,34 @@ std::string resolve_path(const std::string& path) {
     return PathUtils::resolve_asset_path(path);
 }
 
-bool play_async(const std::string& path) {
+bool play_async(const std::string& path, float gain_db) {
     std::string resolved = resolve_path(path);
     if (resolved.empty()) return false;
 
 #if defined(_WIN32) || defined(__linux__)
-    return stream_engine().trigger(resolved, false);
+    return stream_engine().trigger(resolved, false, gain_db);
 #elif defined(__APPLE__)
+    (void)gain_db;
     std::string cmd = "afplay \"" + resolved + "\" > /dev/null 2>&1 &";
     return std::system(cmd.c_str()) == 0;
 #else
+    (void)gain_db;
     return false;
 #endif
 }
 
-bool play_sync(const std::string& path) {
+bool play_sync(const std::string& path, float gain_db) {
     std::string resolved = resolve_path(path);
     if (resolved.empty()) return false;
 
 #if defined(_WIN32) || defined(__linux__)
-    return stream_engine().trigger(resolved, true);
+    return stream_engine().trigger(resolved, true, gain_db);
 #elif defined(__APPLE__)
+    (void)gain_db;
     std::string cmd = "afplay \"" + resolved + "\" > /dev/null 2>&1";
     return std::system(cmd.c_str()) == 0;
 #else
+    (void)gain_db;
     return false;
 #endif
 }

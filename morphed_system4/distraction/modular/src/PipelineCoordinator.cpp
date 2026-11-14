@@ -84,8 +84,8 @@ AlertConfig PipelineCoordinator::build_alert_config(const Options& options) {
     cfg.policy = options.policy;
     cfg.light_cue_window = std::chrono::seconds(120);
     cfg.audio_config.repetition_rate_hz = 1.0;
-    cfg.audio_config.min_volume = 0.3f;
-    cfg.audio_config.max_volume = 1.0f;
+    cfg.audio_config.min_gain_db = -21.0f;
+    cfg.audio_config.max_gain_db = 0.0f;
     return cfg;
 }
 

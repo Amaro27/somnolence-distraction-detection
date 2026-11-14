@@ -24,13 +24,13 @@ public:
     /**
      * @brief Plays a WAV file asynchronously (non-blocking).
      */
-    void play(const std::string& path);
+    void play(const std::string& path, float gain_db = 0.0f);
 
     /**
      * @brief Plays a WAV file synchronously (blocks until finished or stopped).
      * @return true if playback completed normally, false if interrupted/failed.
      */
-    bool play_blocking(const std::string& path);
+    bool play_blocking(const std::string& path, float gain_db = 0.0f);
 
     /**
      * @brief Immediately halts any active audio playback.
@@ -41,7 +41,7 @@ public:
      * @brief Plays the configured alert sound corresponding to the given risk level.
      * No-op if a blocking prompt is currently playing.
      */
-    void play_alert(RiskLevel risk);
+    void play_alert(RiskLevel risk, float gain_db = 0.0f);
 
     const AuditoryAlertConfig& alert_config() const { return alert_cfg_; }
 

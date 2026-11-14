@@ -11,8 +11,8 @@
 namespace SoundPlayer {
 
 void warmup();
-bool play_async(const std::string& path);
-bool play_sync(const std::string& path);
+bool play_async(const std::string& path, float gain_db = 0.0f);
+bool play_sync(const std::string& path, float gain_db = 0.0f);
 void stop();
 std::string resolve_path(const std::string& path);
 
