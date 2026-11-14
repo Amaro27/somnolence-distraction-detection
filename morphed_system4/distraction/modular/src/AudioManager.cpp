@@ -11,7 +11,9 @@ struct ScopedFlagReset {
 } // namespace
 
 AudioManager::AudioManager(AuditoryAlertConfig alert_cfg)
-    : alert_cfg_(std::move(alert_cfg)) {}
+    : alert_cfg_(std::move(alert_cfg)) {
+    SoundPlayer::warmup();
+}
 
 AudioManager::~AudioManager() {
     stop();

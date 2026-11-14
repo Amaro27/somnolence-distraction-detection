@@ -198,6 +198,7 @@ struct CalibrationAudioConfig {
     std::string phase1_tone_path{"input/sounds/sine-415-Hz-1-second-padded.wav"};
     std::string cadence_beep_path{"input/sounds/single-beep-350-hz.wav"};
     std::string phase2_instructions_path{"input/sounds/calib_phase_2.wav"};
+    std::string phase2_tone_path{"input/sounds/sine-415-Hz-1-second-padded.wav"};
     std::string success_sound_path{"input/sounds/tada-LOUD.wav"};
 
     std::chrono::milliseconds silence_gap{1000};          // 1.0s silence gap between voice/tone and beeps

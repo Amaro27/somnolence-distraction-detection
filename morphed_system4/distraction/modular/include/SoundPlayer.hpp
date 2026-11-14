@@ -10,6 +10,7 @@
  */
 namespace SoundPlayer {
 
+void warmup();
 bool play_async(const std::string& path);
 bool play_sync(const std::string& path);
 void stop();

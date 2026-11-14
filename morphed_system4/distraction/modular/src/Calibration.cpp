@@ -28,27 +28,34 @@ bool measure_window(
     const std::function<void(const FacialLandmarks68&)>& on_landmarks
 ) {
     cv::Mat frame;
+    const auto window_start = std::chrono::steady_clock::now();
     for (size_t i = 0; i < cfg.num_beeps; ++i) {
         if (ctx.shutdown.load()) {
             return false;
         }
 
-        auto beep_start = std::chrono::steady_clock::now();
         ctx.audio.play(cfg.cadence_beep_path);
+
+        const auto next_beep_deadline =
+            window_start + cfg.beep_interval * static_cast<long long>(i + 1);
 
         while (true) {
             if (ctx.shutdown.load()) {
                 return false;
             }
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - beep_start);
-            if (elapsed >= cfg.beep_interval) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_beep_deadline) {
                 break;
             }
 
-            auto remaining = cfg.beep_interval - elapsed;
-            auto wait_dur = std::min(remaining, std::chrono::milliseconds(50));
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(next_beep_deadline - now);
+            // Avoid starting ~21ms Dlib face detection when <=30ms remain before the next beep
+            if (remaining <= std::chrono::milliseconds(30)) {
+                std::this_thread::sleep_for(std::min(remaining, std::chrono::milliseconds(10)));
+                continue;
+            }
 
+            const auto wait_dur = std::min(remaining - std::chrono::milliseconds(30), std::chrono::milliseconds(50));
             if (ctx.mailbox.get_latest(frame, wait_dur)) {
                 auto lm_opt = ctx.face.detect(frame, std::chrono::steady_clock::now());
                 if (lm_opt.has_value()) {
@@ -121,6 +128,11 @@ std::optional<CalibrationResult> run_calibration(
               << "=======================================================\n" << std::flush;
 
     ctx.audio.play_blocking(cfg.phase2_instructions_path);
+    if (ctx.shutdown.load()) return std::nullopt;
+    if (!pause_interruptible(cfg.silence_gap, ctx.shutdown)) return std::nullopt;
+
+    std::cout << "[+] Calibration: Playing preparation tone...\n" << std::flush;
+    ctx.audio.play_blocking(cfg.phase2_tone_path);
     if (ctx.shutdown.load()) return std::nullopt;
     if (!pause_interruptible(cfg.silence_gap, ctx.shutdown)) return std::nullopt;
 
