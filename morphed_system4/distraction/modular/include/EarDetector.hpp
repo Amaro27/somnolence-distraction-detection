@@ -16,7 +16,7 @@
  * 4. Micro-sleep detection (>500ms eye closure) emitting Strong cues.
  * 5. Rolling 30-second PERCLOS tracking:
  *    - High PERCLOS (>=15.0%) -> Strong cue
- *    - Medium PERCLOS (7.5% - 15.0%) -> Light cue
+ *    - [Disabled] Medium PERCLOS (7.5% - 15.0%) -> Light cue
  */
 class EarDetector {
 public:

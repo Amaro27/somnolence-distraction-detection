@@ -199,14 +199,15 @@ EarAssessment EarDetector::process(
                     now,
                     "High PERCLOS: " + std::to_string(static_cast<int>(perclos_pct_)) + "% (>= 15%)"
                 });
-            } else if (perclos_pct_ >= config_.perclos_medium_thresh) {
-                last_perclos_cue_time_ = now;
-                cues.push_back(CueEvent{
-                    CueType::Perclos,
-                    CueStrength::Light,
-                    now,
-                    "Medium PERCLOS: " + std::to_string(static_cast<int>(perclos_pct_)) + "% (7.5% - 15%)"
-                });
+            // PERCLOS between 0.075 and 0.15 (7.5% - 15%) as a Light cue disabled:
+            // } else if (perclos_pct_ >= config_.perclos_medium_thresh) {
+            //     last_perclos_cue_time_ = now;
+            //     cues.push_back(CueEvent{
+            //         CueType::Perclos,
+            //         CueStrength::Light,
+            //         now,
+            //         "Medium PERCLOS: " + std::to_string(static_cast<int>(perclos_pct_)) + "% (7.5% - 15%)"
+            //     });
             }
         }
     } else {
