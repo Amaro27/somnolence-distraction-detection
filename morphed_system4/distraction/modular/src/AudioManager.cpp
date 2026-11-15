@@ -28,3 +28,7 @@ bool AudioManager::play_blocking(const std::string& path, float gain_db) {
 void AudioManager::stop() {
     SoundPlayer::stop();
 }
+
+bool AudioManager::is_playing() const {
+    return SoundPlayer::is_playing();
+}

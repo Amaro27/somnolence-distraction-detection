@@ -112,6 +112,11 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
             }
         }
 
+        // Do not trigger or evaluate distraction if a drowsiness alert is active or reproducing
+        if (is_drowsiness_alert_reproducing_locked()) {
+            return;
+        }
+
         // Do not downgrade a high-risk drowsiness state
         if (!gaze_window_.empty() && current_state_ != DriverState::Drowsy) {
             assessment = AlertLogic::evaluate_distraction_mode(
@@ -145,6 +150,14 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
 #endif
 
     if (trigger_distraction_alert) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (is_drowsiness_alert_reproducing_locked()) {
+                return; // Drowsiness took priority, abort distraction alert reproduction
+            }
+            drowsiness_audio_active_ = false;
+        }
+
 #ifdef DEBUG_VIEWS
         std::cout << "\n[ALERT] Distraction detected: Driver looking away from road!\n"
                   << "        Mode: NotLookingRoad (" << assessment.not_looking_votes << "/"
@@ -171,7 +184,10 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
                   << "       Mode: LookingRoad (" << assessment.looking_votes << "/"
                   << assessment.total_votes << " votes in 2.0s)\n";
 #endif
-        audio_.stop();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!is_drowsiness_alert_reproducing_locked()) {
+            audio_.stop();
+        }
     }
 }
 
@@ -279,6 +295,10 @@ void AlertManager::update_somnolence(
         strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot
     );
     if (cleared_drowsiness) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            drowsiness_audio_active_ = false;
+        }
 #ifdef DEBUG_VIEWS
         std::cout << "\n[INFO] Drowsiness alert cleared: Driver physiological features returned to normal.\n";
 #endif
@@ -327,6 +347,12 @@ void AlertManager::dispatch_auditory_alert(
     float gain_db,
     const std::string& reason
 ) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        drowsiness_audio_active_ = true;
+    }
+    // Drowsiness takes priority: interrupt any active distraction playback immediately
+    audio_.stop();
     log_auditory_alert(gain_db, reason);
     audio_.play(sound_path, gain_db);
 }
@@ -340,6 +366,7 @@ void AlertManager::reset() {
         window_start_time_ = std::chrono::steady_clock::now();
         last_alert_sound_time_ = std::chrono::steady_clock::now() - std::chrono::seconds(10);
         drowsiness_step_idx_ = 0;
+        drowsiness_audio_active_ = false;
         has_warmed_up_ = false;
         initial_warmup_logged_ = false;
     }
@@ -347,6 +374,21 @@ void AlertManager::reset() {
 #ifdef DEBUG_VIEWS
     std::cout << "[*] AlertManager state reset to Safe.\n";
 #endif
+}
+
+bool AlertManager::is_drowsiness_alert_reproducing() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return is_drowsiness_alert_reproducing_locked();
+}
+
+bool AlertManager::is_drowsiness_alert_reproducing_locked() const {
+    if (current_state_ == DriverState::Drowsy) {
+        return true;
+    }
+    if (drowsiness_audio_active_ && audio_.is_playing()) {
+        return true;
+    }
+    return false;
 }
 
 DriverState AlertManager::current_driver_state() const {

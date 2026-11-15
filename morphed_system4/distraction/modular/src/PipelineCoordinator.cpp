@@ -413,6 +413,7 @@ void PipelineCoordinator::somnolence_worker_loop() {
     try {
         cv::Mat frame;
         bool was_calibrated = false;
+        auto last_face_probe_time = std::chrono::steady_clock::now() - std::chrono::seconds(10);
 
         somno_work_ms_.reserve(18000);
         somno_cycle_ms_.reserve(18000);
@@ -461,7 +462,19 @@ void PipelineCoordinator::somnolence_worker_loop() {
             }
 
             const auto t_work_start = std::chrono::steady_clock::now();
-            auto landmarks_opt = face_detector_.detect(frame, t_work_start);
+
+            // When face is missing, throttle face search to lost_face_probe_interval (default 500ms)
+            // to prioritize CPU throughput for the distraction worker.
+            const bool face_missing = face_detector_.is_face_missing();
+            const auto probe_interval = face_detector_.config().lost_face_probe_interval;
+            const bool should_probe = !face_missing ||
+                (std::chrono::duration_cast<std::chrono::milliseconds>(t_work_start - last_face_probe_time) >= probe_interval);
+
+            std::optional<FacialLandmarks68> landmarks_opt;
+            if (should_probe) {
+                last_face_probe_time = t_work_start;
+                landmarks_opt = face_detector_.detect(frame, t_work_start);
+            }
             EarAssessment ear_res{};
             HeadOrientationAssessment head_res{};
             MarAssessment mar_res{};

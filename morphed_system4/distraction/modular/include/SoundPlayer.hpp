@@ -14,6 +14,7 @@ void warmup();
 bool play_async(const std::string& path, float gain_db = 0.0f);
 bool play_sync(const std::string& path, float gain_db = 0.0f);
 void stop();
+bool is_playing();
 std::string resolve_path(const std::string& path);
 
 } // namespace SoundPlayer

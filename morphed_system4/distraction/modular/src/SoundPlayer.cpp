@@ -294,6 +294,11 @@ public:
         state_cv_.notify_all();
     }
 
+    bool is_playing() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(state_mutex_));
+        return active_samples_ != nullptr;
+    }
+
 private:
     void fill_next_block(int16_t* dst) {
         bool finished = false;
@@ -554,6 +559,14 @@ void stop() {
     stream_engine().stop_playback();
 #elif defined(__APPLE__)
     std::system("killall -q afplay > /dev/null 2>&1");
+#endif
+}
+
+bool is_playing() {
+#if defined(_WIN32) || defined(__linux__)
+    return stream_engine().is_playing();
+#else
+    return false;
 #endif
 }
 

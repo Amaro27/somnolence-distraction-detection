@@ -169,6 +169,7 @@ struct AlertConfig {
 struct FaceLandmarkConfig {
     std::string predictor_path{"input/shape_predictor_68_face_landmarks.dat"};
     std::chrono::seconds lost_face_timeout{3}; // 3-second recovery timeout
+    std::chrono::milliseconds lost_face_probe_interval{500}; // 500ms throttled search when face missing
 };
 
 /**

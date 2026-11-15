@@ -60,6 +60,11 @@ public:
     DriverState current_driver_state() const;
 
     /**
+     * @brief Checks if a drowsiness alert is active or actively reproducing audio.
+     */
+    bool is_drowsiness_alert_reproducing() const;
+
+    /**
      * @brief Resets temporal history and transitions state back to Safe.
      */
     void reset();
@@ -67,6 +72,7 @@ public:
     AlertConfig config() const;
 
 private:
+    bool is_drowsiness_alert_reproducing_locked() const;
     bool try_consume_drowsiness_cooldown(float& out_gain_db) noexcept;
     void register_cue_locked(
         const CueEvent& cue,
@@ -87,6 +93,7 @@ private:
     std::chrono::steady_clock::time_point window_start_time_;
     std::chrono::steady_clock::time_point last_alert_sound_time_;
     size_t drowsiness_step_idx_{0};
+    bool drowsiness_audio_active_{false};
     bool has_warmed_up_{false};
     bool initial_warmup_logged_{false};
 };

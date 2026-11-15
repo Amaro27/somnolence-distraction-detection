@@ -33,6 +33,11 @@ public:
      */
     void stop();
 
+    /**
+     * @brief Checks if audio is currently playing.
+     */
+    bool is_playing() const;
+
 private:
     std::mutex mutex_;
 };
