@@ -347,9 +347,12 @@ def extraer_ear_dataset(args, ruta_cache):
 # ---------------------------------------------------------
 # Etapa 2: Calibración y Filtro Adaptativo en Cascada (AF_benchmark_EB8)
 # ---------------------------------------------------------
-def seleccionar_muestra_calibracion(df, frac_calib=0.10, min_por_clase=25):
-    """Selecciona una muestra uniforme del 10% de frames 'open' y 'close' de cada grabación
-    como referencia de calibración del sujeto y los excluye de la evaluación."""
+def seleccionar_muestra_calibracion(df, frac_calib=1.0, min_por_clase=25):
+    """Si frac_calib >= 1.0 (por defecto), usa el video completo (100% de los frames) para
+    calibrar y también evalúa sobre el video completo (sin split). Si 0 < frac_calib < 1,
+    toma una muestra uniforme de esa fracción y la excluye de la evaluación."""
+    if frac_calib >= 1.0:
+        return np.ones(len(df), dtype=bool), np.ones(len(df), dtype=bool)
     es_calib = np.zeros(len(df), dtype=bool)
     paso = max(2, int(round(1.0 / max(frac_calib, 0.01))))
     for _, sub in df.groupby("grabacion"):
@@ -361,7 +364,7 @@ def seleccionar_muestra_calibracion(df, frac_calib=0.10, min_por_clase=25):
             if len(elegidos) < min_por_clase and len(idx_c) >= min_por_clase:
                 elegidos = idx_c[np.linspace(0, len(idx_c) - 1, min_por_clase, dtype=int)]
             es_calib[elegidos] = True
-    return es_calib
+    return es_calib, ~es_calib
 
 
 def obtener_referencias_calibracion(df, es_calib, modo_calibracion):
@@ -409,20 +412,22 @@ def simular_secuencia_eb8(df, refs, modo_calibracion, modo_filtro, sensibilidad=
         ear_abierto_init, piso_fijo = refs[g]
         ear_base_abierto = ear_abierto_init
 
-        rango_min = 0.04
+        rango_min = 0.05
         rango_inicial = max(rango_min, ear_base_abierto - piso_fijo)
         thr_cierre = piso_fijo + ((1.0 - sensibilidad) * rango_inicial)
         thr_descenso = piso_fijo + (FACTOR_DESCENSO * rango_inicial)
         thr_estatico_cierre = thr_cierre
 
-        # Filtros en cascada idénticos a AF_benchmark_EB8.py
+        # Filtros en cascada idénticos a AF_test.py (mediana=5, media móvil=40 pre-llenados)
         buffer_crudo_ear = deque(maxlen=5)
-        buffer_mediano_ear = deque(maxlen=int(3.0 * FPS_DMD))
+        buffer_mediano_ear = deque(maxlen=40)
         buffer_suav_corto = deque(maxlen=3)
 
-        # Pre-llenado suave en modos calibrados para estabilidad desde el frame 0
         for _ in range(buffer_crudo_ear.maxlen):
             buffer_crudo_ear.append(ear_base_abierto)
+        if modo_calibracion in ("grabacion", "dataset"):
+            for _ in range(buffer_mediano_ear.maxlen):
+                buffer_mediano_ear.append(ear_base_abierto)
 
         en_ciclo_parpadeo = False
         ultimo_frame_fin = -COOLDOWN_FRAMES
@@ -666,6 +671,17 @@ def guardar_ejemplos_errores(d_a, n, dir_salida, modelo_path):
 # ---------------------------------------------------------
 # Ejecución Principal
 # ---------------------------------------------------------
+def _guardar_csv(df, ruta, **kwargs):
+    """Guarda un DataFrame en CSV; si el archivo está abierto en Excel (PermissionError),
+    lo guarda con sufijo '_actualizado.csv' sin interrumpir la ejecución."""
+    try:
+        df.to_csv(ruta, **kwargs)
+    except PermissionError:
+        alt = Path(ruta).with_name(f"{Path(ruta).stem}_actualizado{Path(ruta).suffix}")
+        df.to_csv(alt, **kwargs)
+        print(f"[AVISO] '{Path(ruta).name}' está abierto en otro programa; se guardó en '{alt.name}'.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Benchmark DMD eyes_state con secuencia temporal y filtro adaptativo EB8")
     ap.add_argument("--dir", default=str(DIR_EYES_STATE), help="Carpeta eyes_state del DMD")
@@ -679,8 +695,9 @@ def main():
                     help="Modo de filtrado principal: crudo_estatico | adaptativo_eb8 | adaptativo_eb8_suav")
     ap.add_argument("--sensibilidad", type=float, default=SENSIBILIDAD_CIERRE,
                     help="0.80 -> umbral al 20%% inferior del rango de apertura")
-    ap.add_argument("--frac-calib", type=float, default=0.10,
-                    help="Fracción de frames open y close por grabación usada para calibración inicial")
+    ap.add_argument("--frac-calib", type=float, default=1.0,
+                    help="1.0 (por defecto): calibra y evalúa con el video completo (sin split); "
+                         "<1.0: usa esa fracción para calibrar y la excluye de la evaluación")
     ap.add_argument("--guardar-errores", type=int, default=50,
                     help="Cantidad de imágenes de FP y FN a guardar en errores/ (0 = ninguna)")
     ap.add_argument("--recalcular", action="store_true", help="Re-extraer EAR ignorando la caché")
@@ -696,11 +713,10 @@ def main():
     print("\nCobertura de detección de rostro (16:9 + dlib):")
     print(df["metodo"].value_counts().to_string())
 
-    # 2. Separar muestra de calibración inicial (excluida de las métricas para todos los modos)
-    es_calib = seleccionar_muestra_calibracion(df, args.frac_calib)
-    mask_eval = ~es_calib
-    print(f"\nFrames totales: {len(df)} | Frames de calibración inicial excluidos: {es_calib.sum()} "
-          f"({es_calib.mean():.1%}) | Frames de evaluación: {mask_eval.sum()}")
+    # 2. Definir conjunto de calibración y de evaluación (por defecto 100% del video completo)
+    es_calib, mask_eval = seleccionar_muestra_calibracion(df, args.frac_calib)
+    print(f"\nFrames totales: {len(df)} | Frames usados para calibración: {es_calib.sum()} "
+          f"({es_calib.mean():.1%}) | Frames evaluados: {mask_eval.sum()} ({mask_eval.mean():.1%})")
 
     # 3. Comparativa cuantitativa de todas las combinaciones (Calibración x Filtro)
     filas_comp = []
@@ -729,7 +745,7 @@ def main():
             filas_comp.append(fila)
 
     df_comp = pd.DataFrame(filas_comp)
-    df_comp.to_csv(salida / "comparacion_configuraciones.csv", index=False, encoding="utf-8-sig")
+    _guardar_csv(df_comp, salida / "comparacion_configuraciones.csv", index=False, encoding="utf-8-sig")
 
     print("\n" + "=" * 105)
     print(" TABLA COMPARATIVA DE CONFIGURACIONES (Escenario A: open vs close)")
@@ -754,7 +770,7 @@ def main():
             "umbral_cierre_medio": round(float(sub_g["umbral"].mean()), 4),
         })
     df_refs = pd.DataFrame(filas_ref)
-    df_refs.to_csv(salida / "calibracion_por_grabacion.csv", index=False, encoding="utf-8-sig")
+    _guardar_csv(df_refs, salida / "calibracion_por_grabacion.csv", index=False, encoding="utf-8-sig")
 
     print("\n" + "=" * 105)
     print(f" RESULTADOS DETALLADOS - CONFIGURACIÓN PRINCIPAL: calibracion={args.calibracion} | filtro={args.filtro}")
@@ -802,15 +818,15 @@ def main():
                 filas_g.append({"grabacion": g, **mg})
         if filas_g:
             df_por_grab = pd.DataFrame(filas_g)
-            df_por_grab.to_csv(salida / "metricas_por_grabacion_A.csv", index=False, encoding="utf-8-sig")
+            _guardar_csv(df_por_grab, salida / "metricas_por_grabacion_A.csv", index=False, encoding="utf-8-sig")
             print("\nDesempeño por grabación/sujeto (Escenario A: open vs close):")
             cols_g = ["grabacion", "N", "Accuracy", "Balanced_Accuracy", "Recall", "Especificidad", "Precision", "F1", "AUC_ROC"]
             print(df_por_grab[cols_g].round(4).to_string(index=False))
 
     # Exportar archivos y gráficas
-    df_resumen.to_csv(salida / "metricas_resumen.csv", index=False, encoding="utf-8-sig")
-    tabla_carpetas.to_csv(salida / "prediccion_por_carpeta.csv", encoding="utf-8-sig")
-    df_eval.to_csv(salida / "predicciones_por_imagen.csv", index=False, encoding="utf-8-sig")
+    _guardar_csv(df_resumen, salida / "metricas_resumen.csv", index=False, encoding="utf-8-sig")
+    _guardar_csv(tabla_carpetas, salida / "prediccion_por_carpeta.csv", encoding="utf-8-sig")
+    _guardar_csv(df_eval, salida / "predicciones_por_imagen.csv", index=False, encoding="utf-8-sig")
     graficar_distribucion(df_eval, args.sensibilidad, salida / "distribucion_ear.png")
     graficar_pct_cerrado(tabla_carpetas, salida / "pct_cerrado_por_carpeta.png")
     graficar_serie_temporal(df_main, salida / "serie_temporal_ejemplo.png")
