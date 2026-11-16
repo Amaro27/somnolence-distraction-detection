@@ -56,7 +56,8 @@ public:
      */
     EarAssessment process(
         const FacialLandmarks68& landmarks,
-        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now(),
+        bool suppress_closure = false
     );
 
     bool is_calibrated() const { return calibrated_; }

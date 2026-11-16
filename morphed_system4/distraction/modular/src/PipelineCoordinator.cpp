@@ -481,9 +481,16 @@ void PipelineCoordinator::somnolence_worker_loop() {
             if (landmarks_opt.has_value()) {
                 const auto& landmarks = landmarks_opt.value();
 
-                ear_res = ear_detector_.process(landmarks, t_work_start);
-                head_res = head_detector_.process(landmarks, t_work_start);
+                // Evaluate mouth aspect ratio (MAR) and yawn duration first
                 mar_res = mar_detector_.process(landmarks, t_work_start);
+
+                const double yawn_suppress_sec = std::chrono::duration<double>(
+                    mar_detector_.config().time_for_ear_suppresion_by_yawn
+                ).count();
+                const bool suppress_eye_closure = (mar_res.yawn_duration_sec >= yawn_suppress_sec);
+
+                ear_res = ear_detector_.process(landmarks, t_work_start, suppress_eye_closure);
+                head_res = head_detector_.process(landmarks, t_work_start);
 
                 alert_manager_.update_somnolence(ear_res, head_res, mar_res);
             } else {

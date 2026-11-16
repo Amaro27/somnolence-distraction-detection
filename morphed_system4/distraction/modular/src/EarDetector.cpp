@@ -74,7 +74,8 @@ void EarDetector::apply_baseline(
 
 EarAssessment EarDetector::process(
     const FacialLandmarks68& landmarks,
-    std::chrono::steady_clock::time_point now
+    std::chrono::steady_clock::time_point now,
+    bool suppress_closure
 ) {
     // 1. Calculate Eye Aspect Ratio (EAR) for both eyes
     double ear_raw = compute_ear(landmarks);
@@ -126,7 +127,13 @@ EarAssessment EarDetector::process(
     double ear_mov_avg_val = buffer_median_.empty() ? ear_raw : MathUtils::compute_mean(buffer_median_);
 
     // 4. Blink Cycle & Micro-Sleep Tracking (>500ms -> Strong cue)
-    if (ear_raw < thresh_descent_) {
+    if (suppress_closure) {
+        if (in_blink_cycle_) {
+            in_blink_cycle_ = false;
+            reached_effective_closure_ = false;
+            microsleep_alarm_active_ = false;
+        }
+    } else if (ear_raw < thresh_descent_) {
         if (!in_blink_cycle_) {
             in_blink_cycle_ = true;
             reached_effective_closure_ = false;
@@ -167,7 +174,8 @@ EarAssessment EarDetector::process(
     }
 
     // 5. True Rolling 30-Second PERCLOS Tracking (O(1) running count)
-    int is_closed_sample = (ear_raw <= thresh_closure_) ? 1 : 0;
+    // While yawning, ignore closure so PERCLOS rolling buffer is not contaminated
+    int is_closed_sample = (!suppress_closure && ear_raw <= thresh_closure_) ? 1 : 0;
     perclos_buffer_.push_back({now, is_closed_sample});
     if (is_closed_sample == 1) {
         ++closed_samples_count_;
@@ -190,7 +198,7 @@ EarAssessment EarDetector::process(
         perclos_pct_ = (static_cast<double>(closed_samples_count_) / static_cast<double>(perclos_buffer_.size())) * 100.0;
 
         auto elapsed_since_cue = std::chrono::duration_cast<std::chrono::seconds>(now - last_perclos_cue_time_);
-        if (in_blink_cycle_ && elapsed_since_cue >= std::chrono::seconds(5)) {
+        if (!suppress_closure && in_blink_cycle_ && elapsed_since_cue >= std::chrono::seconds(5)) {
             if (perclos_pct_ >= config_.perclos_high_thresh) {
                 last_perclos_cue_time_ = now;
                 cues.push_back(CueEvent{

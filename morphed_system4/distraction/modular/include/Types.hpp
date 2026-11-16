@@ -222,6 +222,7 @@ struct EarConfig {
  */
 struct MarConfig {
     double mar_threshold{0.55};
+    std::chrono::milliseconds time_for_ear_suppresion_by_yawn{200}; // 0.2s accumulator threshold
     std::chrono::seconds sustained_duration{4};
     std::chrono::seconds alarm_cooldown{2};
 };

@@ -267,7 +267,12 @@ void AlertManager::update_somnolence(
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        const bool is_yawning_suppression = (mar.yawn_duration_sec >= 0.2);
+
         for (const auto& cue : ear.cues) {
+            if (is_yawning_suppression && (cue.type == CueType::BlinkDuration || cue.type == CueType::Perclos)) {
+                continue;
+            }
             register_cue_locked(cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
         }
         if (head.cue.has_value()) {
@@ -277,7 +282,8 @@ void AlertManager::update_somnolence(
             register_cue_locked(*mar.cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
         }
 
-        const bool features_normal = !ear.in_blink_cycle && !head.is_drooping && !mar.is_yawning;
+        const bool blink_active = !is_yawning_suppression && ear.in_blink_cycle;
+        const bool features_normal = !blink_active && !head.is_drooping && !mar.is_yawning;
         if (current_state_ == DriverState::Drowsy) {
             if (features_normal && strong_cues_triggered.empty() && !trigger_high_alert) {
                 current_state_ = DriverState::Safe;
