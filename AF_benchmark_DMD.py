@@ -1,42 +1,58 @@
 """
 AF_benchmark_DMD.py
 ===================
-Evaluación por IMAGEN del detector de ojo cerrado (dlib 68 landmarks + EAR) sobre la
-carpeta `eyes_state` del Driver Monitoring Dataset (DMD).
+Evaluación en secuencia temporal (frame a frame) del detector de ojo cerrado y parpadeo
+(dlib 68 puntos + EAR + filtro adaptativo en cascada de AF_benchmark_EB8) sobre la carpeta
+`eyes_state` del Driver Monitoring Dataset (DMD).
 
-Estructura esperada:
-    <eyes_state>/close/*.jpg      -> ojo cerrado
-    <eyes_state>/closing/*.jpg    -> ojo cerrándose   (transición)
-    <eyes_state>/open/*.jpg       -> ojo abierto
-    <eyes_state>/opening/*.jpg    -> ojo abriéndose   (transición)
+Estructura del dataset:
+    <eyes_state>/close/*.jpg     -> ojo cerrado          (GT = 1)
+    <eyes_state>/open/*.jpg      -> ojo abierto          (GT = 0)
+    <eyes_state>/closing/*.jpg   -> ojo cerrándose       (transición)
+    <eyes_state>/opening/*.jpg   -> ojo abriéndose       (transición)
 
-Pipeline (2 etapas):
-  1) EXTRACCIÓN: para cada imagen se localiza el rostro, se calcula el EAR con las landmarks de
-     dlib y se guarda en un CSV (caché). Es la etapa lenta; se hace en paralelo y solo una vez.
-     NOTA: las imágenes de esta carpeta son frames completos de cabina a 224x224 (rostro de
-     ~50 px), no recortes de cara. El HOG de dlib solo detecta ~5 %, por eso la caja de rostro
-     sale por defecto de una cascada Haar (~95 %); las landmarks siguen siendo de dlib.
-  2) EVALUACIÓN: el umbral es individual por GRABACIÓN (= sujeto; hay 16), con la misma
-     fórmula que AF_benchmark_EB8: piso + (1 - SENSIBILIDAD) * (EAR_abierto - piso), donde
-     EAR_abierto y piso son las medianas de EAR de una muestra de open / close de ese sujeto
-     (excluida de la evaluación). Se predice "cerrado" si EAR <= umbral y se compara contra la
-     etiqueta de la carpeta.
+Nombre de cada archivo:
+    face_<AAAA-MM-DD-HH;MM;SS>_<a>_<b>_<frame>.jpg
+  * El timestamp identifica la GRABACIÓN (= un sujeto/video; hay 16 en s5).
+  * <frame> es el índice de fotograma (0, 1, ..., N-1). Al reunir las 4 subcarpetas y
+    ordenar por (grabacion, frame), se reconstruye la secuencia continua completa de cada video.
 
-Como no hay secuencia temporal en la evaluación por imagen, NO se usan los filtros
-(mediana / media móvil) ni el umbral adaptativo en línea: el umbral es estático por sujeto.
+Hallazgo clave sobre la detección de rostro en DMD `eyes_state`:
+  * Las imágenes de `eyes_state` están guardadas a 224x224 aplastando fotogramas panorámicos
+    16:9 (1280x720) de toda la cabina. Eso comprime el rostro horizontalmente ~1.78x, haciendo
+    que el detector HOG de dlib falle (~95%) y distorsionando la proporción vertical/horizontal
+    del EAR.
+  * Al restaurar la relación de aspecto 16:9 (640x360) antes de detectar y predecir landmarks,
+    el detector HOG nativo de dlib (`dlib.get_frontal_face_detector`) detecta el rostro en >99%
+    de los fotogramas y entrega valores de EAR fisiológicos (~0.30 abierto, ~0.16 cerrado),
+    compatibles con `AF_benchmark_EB8.py`.
+  * Además se filtra la región plausible del conductor (descartando falsos positivos en el
+    tablero o pecho) y se aplica consistencia temporal a la caja del rostro.
 
-Ground truth (escenarios reportados):
-  A) Binario estricto : open (0) vs close (1). closing/opening se excluyen. (Principal)
-  B) Con transiciones : open+opening (0) vs close+closing (1).
-  Además se reporta, para las 4 carpetas, el % de imágenes predichas como cerradas.
-
-Uso rápido:
-    python AF_benchmark_DMD.py                       # todo el dataset
-    python AF_benchmark_DMD.py --limite 300          # prueba rápida (300 imgs por carpeta)
-    python AF_benchmark_DMD.py --calibracion dataset # un solo umbral global (peor: hay 16 sujetos)
-    python AF_benchmark_DMD.py --recalcular          # fuerza re-extraer EAR
+Algoritmo evaluado (fiel a `AF_benchmark_EB8.py` y `AF_test.py`):
+  * Umbral de cierre al 20% del rango de apertura (`SENSIBILIDAD_CIERRE = 0.80`):
+        threshold_cierre   = piso + 0.20 * (ear_base_abierto - piso)
+        threshold_descenso = piso + 0.70 * (ear_base_abierto - piso)
+  * Doble filtro en cascada (Mediana de 5 frames -> Media móvil de 3 s / 90 frames) con guarda
+    (`not en_ciclo_parpadeo and ear > threshold_adaptativo_descenso`) para actualizar
+    dinámicamente `ear_base_abierto` y los umbrales adaptativos en línea.
+  * Se comparan cuantitativamente:
+      - Modos de calibración:
+          1) `grabacion`  : `ear_base_abierto` y `piso` calibrados por sujeto (muestra inicial).
+          2) `dataset`    : un único `ear_base_abierto` y `piso` general para todo el dataset.
+          3) `fija_eb8`   : sin calibración con etiquetas del DMD; usa los valores fijos de
+                            `AF_benchmark_EB8.py` (abierto=0.2981, piso=0.1525) y permite que
+                            el filtro adaptativo ajuste `ear_base_abierto` en línea.
+          4) `fija_estatica`: umbral fijo constante de EB8 (abierto=0.2981, piso=0.1525).
+      - Modos de filtrado temporal:
+          1) `crudo_estatico`      : EAR por frame sin suavizar + umbral estático.
+          2) `adaptativo_eb8`      : filtro adaptativo en cascada de EB8 sobre el umbral.
+          3) `adaptativo_eb8_suav` : filtro adaptativo en cascada de EB8 + mediana móvil corta
+                                     (3 frames) en el EAR para reducir ruido de landmarks.
 """
 import argparse
+from collections import deque
+import json
 import os
 import re
 import sys
@@ -57,7 +73,7 @@ from scipy.stats import rankdata
 BASE_DIR = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------
-# Configuración por defecto
+# Configuración y Parámetros Fisiológicos (de AF_benchmark_EB8.py)
 # ---------------------------------------------------------
 DIR_EYES_STATE = BASE_DIR / "output" / "dmd_rgb" / "s5" / "eyes_state"
 DIR_SALIDA = BASE_DIR / "resultados_dmd"
@@ -65,13 +81,20 @@ MODELO_DLIB = BASE_DIR / "shape_predictor_68_face_landmarks.dat"
 
 CLASES = ["close", "closing", "open", "opening"]
 
-# Valores calibrados en AF_benchmark_EB8 (modo --calibracion fija)
+# Resolución 16:9 restaurada (mitad de 1280x720 original del DMD)
+ANCHO_16_9 = 640
+ALTO_16_9 = 360
+
+# Parámetros fisiológicos de AF_benchmark_EB8.py
 EAR_ABIERTO_EB8 = 0.2981
 PISO_FISIOLOGICO_DLIB = 0.1525
+FACTOR_DESCENSO = 0.70
+SENSIBILIDAD_CIERRE = 0.80   # 1 - 0.80 = 0.20 (20% del rango de apertura = ojo cerrado)
+FPS_DMD = 30.0
+COOLDOWN_FRAMES = 2
 
-# Mismo criterio que EB8: SENSIBILIDAD 0.80 -> el ojo se considera cerrado cuando
-# su EAR está en el 20 % inferior del rango [piso, EAR_abierto] del individuo.
-SENSIBILIDAD_CIERRE = 0.80
+CALIBRACIONES = ["grabacion", "dataset", "fija_eb8", "fija_estatica"]
+MODOS_FILTRO = ["crudo_estatico", "adaptativo_eb8", "adaptativo_eb8_suav"]
 
 (R_START, R_END) = (36, 42)
 (L_START, L_END) = (42, 48)
@@ -88,20 +111,18 @@ def calcular_ear(ojo):
 
 
 # ---------------------------------------------------------
-# Etapa 1: extracción de EAR por imagen
+# Utilidades de lectura y metadatos de archivos
 # ---------------------------------------------------------
-def _init_worker(modelo, detector_modo, escala):
-    global _detector, _predictor, _haar, _detector_modo, _escala
-    _detector = dlib.get_frontal_face_detector()
-    _predictor = dlib.shape_predictor(str(modelo))
-    _haar = [cv2.CascadeClassifier(cv2.data.haarcascades + n)
-             for n in ("haarcascade_frontalface_default.xml", "haarcascade_frontalface_alt2.xml")]
-    _detector_modo = detector_modo
-    _escala = escala
+_RE_NOMBRE = re.compile(r"face_(.+?)_(\d+)_(\d+)_(\d+)\.\w+$")
+
+
+def meta_nombre(ruta):
+    """Extrae (grabacion, frame) del nombre face_<timestamp>_<a>_<b>_<frame>.jpg."""
+    m = _RE_NOMBRE.search(os.path.basename(ruta))
+    return (m.group(1), int(m.group(4))) if m else ("desconocida", -1)
 
 
 def _es_puntero_lfs(ruta):
-    """Un puntero Git LFS es un texto de ~130 bytes que empieza con 'version https://git-lfs'."""
     try:
         if os.path.getsize(ruta) > 1024:
             return False
@@ -111,205 +132,383 @@ def _es_puntero_lfs(ruta):
         return False
 
 
-def _detectar_rostro(gray):
-    """Devuelve (rect, metodo) en coordenadas de `gray`.
-
-    OJO: las imágenes de esta carpeta del DMD NO son recortes de cara, sino frames completos
-    de la cabina reducidos a 224x224 (rostro de ~50 px), por lo que el HOG de dlib casi nunca
-    detecta rostro (~5 %). Modo 'cascada' (por defecto): Haar (rápido, ~95 %) -> Haar alt2 ->
-    dlib con umbral relajado. Modo 'dlib': solo el detector HOG original (upsample 1).
-    Las landmarks siempre las calcula el predictor de dlib de 68 puntos."""
-    if _detector_modo == "dlib":
-        rostros = _detector(gray, 1)
-        if len(rostros) > 0:
-            return max(rostros, key=lambda x: x.area()), "dlib_hog"
-        return None, "sin_rostro"
-    for h, nombre in zip(_haar, ("haar_default", "haar_alt2")):
-        hs = h.detectMultiScale(gray, 1.05, 3, minSize=(int(20 * _escala),) * 2)
-        if len(hs) > 0:
-            x, y, w, hh = max(hs, key=lambda t: t[2] * t[3])
-            return dlib.rectangle(int(x), int(y), int(x + w), int(y + hh)), nombre
-    dets, scores, _ = _detector.run(gray, 0, -0.6)
-    if len(dets) > 0:
-        return dets[int(np.argmax(scores))], "dlib_hog_relajado"
-    return None, "sin_rostro"
-
-
-def procesar_imagen(args):
-    ruta, clase = args
-    reg = {"ruta": ruta, "clase": clase, "ear": np.nan, "ear_der": np.nan,
-           "ear_izq": np.nan, "metodo": "error_lectura"}
-    if _es_puntero_lfs(ruta):
-        reg["metodo"] = "puntero_lfs"
-        return reg
-    # imdecode+fromfile: robusto a rutas con ';' / caracteres especiales en Windows
+def _leer_imagen(ruta):
     try:
-        data = np.fromfile(ruta, dtype=np.uint8)
-        img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        return cv2.imdecode(np.fromfile(ruta, dtype=np.uint8), cv2.IMREAD_COLOR)
     except OSError:
-        img = None
-    if img is None:
-        return reg
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    if _escala != 1:  # el rostro mide ~50 px: se amplía para detectar y para las landmarks
-        gray = cv2.resize(gray, None, fx=_escala, fy=_escala, interpolation=cv2.INTER_CUBIC)
-    rect, metodo = _detectar_rostro(gray)
-    reg["metodo"] = metodo
-    if rect is None:
-        return reg
-
-    shape = _predictor(gray, rect)
-    pts = np.array([(shape.part(i).x, shape.part(i).y) for i in range(68)], dtype="int")
-    ear_der = calcular_ear(pts[R_START:R_END])
-    ear_izq = calcular_ear(pts[L_START:L_END])
-    reg["ear_der"] = ear_der
-    reg["ear_izq"] = ear_izq
-    reg["ear"] = (ear_der + ear_izq) / 2.0
-    return reg
+        return None
 
 
-def listar_imagenes(dir_eyes_state, limite, semilla):
-    rng = np.random.default_rng(semilla)
+def listar_imagenes(dir_eyes_state, max_grabaciones=0):
     tareas = []
     for clase in CLASES:
         carpeta = Path(dir_eyes_state) / clase
         if not carpeta.is_dir():
             print(f"[AVISO] No existe la carpeta: {carpeta}")
             continue
-        archivos = sorted(e.path for e in os.scandir(carpeta)
-                          if e.is_file() and e.name.lower().endswith((".jpg", ".jpeg", ".png")))
-        if limite and len(archivos) > limite:
-            idx = np.sort(rng.choice(len(archivos), size=limite, replace=False))
-            archivos = [archivos[i] for i in idx]
-        print(f"  {clase:8s}: {len(archivos):6d} imágenes")
-        tareas += [(a, clase) for a in archivos]
+        tareas += [(e.path, clase) for e in os.scandir(carpeta)
+                   if e.is_file() and e.name.lower().endswith((".jpg", ".jpeg", ".png"))]
+    if max_grabaciones:
+        recs = sorted({meta_nombre(r)[0] for r, _ in tareas})[:max_grabaciones]
+        tareas = [t for t in tareas if meta_nombre(t[0])[0] in recs]
+    tareas.sort(key=lambda t: t[0])
+    print("  " + ", ".join(f"{c}: {sum(1 for _, k in tareas if k == c)}" for c in CLASES))
     return tareas
 
 
-def extraer_ears(args, ruta_cache):
+# ---------------------------------------------------------
+# Etapa 1: Detección de rostro 16:9 con dlib y cálculo de EAR
+# ---------------------------------------------------------
+def _init_worker(modelo_path):
+    global _detector, _predictor
+    _detector = dlib.get_frontal_face_detector()
+    _predictor = dlib.shape_predictor(str(modelo_path))
+
+
+def _fraccion_piel(img_bgr, x1, y1, x2, y2):
+    """Fracción de píxeles con tono de piel (YCrCb) en el centro de la caja."""
+    h_im, w_im = img_bgr.shape[:2]
+    w, h = x2 - x1, y2 - y1
+    xa, xb = max(0, int(x1 + 0.2 * w)), min(w_im, int(x2 - 0.2 * w))
+    ya, yb = max(0, int(y1 + 0.2 * h)), min(h_im, int(y2 - 0.2 * h))
+    if xb <= xa or yb <= ya:
+        return 0.0
+    roi = img_bgr[ya:yb, xa:xb]
+    mask = cv2.inRange(cv2.cvtColor(roi, cv2.COLOR_BGR2YCrCb), (0, 130, 75), (255, 175, 130))
+    return float(mask.mean() / 255.0)
+
+
+def _ear_desde_caja(gray, rect, shrink=0.88):
+    """Ajusta ligeramente la caja HOG (shrink=0.88 centrado un poco más arriba) para evitar que
+    la barba/cuello desplace hacia abajo las landmarks de los ojos, y calcula el EAR con dlib."""
+    cx = (rect.left() + rect.right()) / 2.0
+    cy = (rect.top() + rect.bottom()) / 2.0 - (1.0 - shrink) * 0.30 * rect.height()
+    w, h = rect.width() * shrink, rect.height() * shrink
+    r_adj = dlib.rectangle(int(round(cx - w / 2.0)), int(round(cy - h / 2.0)),
+                           int(round(cx + w / 2.0)), int(round(cy + h / 2.0)))
+    shape = _predictor(gray, r_adj)
+    pts = np.array([(shape.part(i).x, shape.part(i).y) for i in range(68)], dtype="float")
+    ear_der = calcular_ear(pts[R_START:R_END])
+    ear_izq = calcular_ear(pts[L_START:L_END])
+    return (ear_der + ear_izq) / 2.0, ear_der, ear_izq, pts
+
+
+def procesar_imagen_16_9(arg):
+    """Restaura 16:9 (640x360), detecta candidatos de rostro con dlib HOG en la zona del
+    conductor y calcula el EAR del mejor candidato."""
+    ruta, clase = arg
+    reg = {
+        "ruta": ruta, "clase": clase,
+        "ear": np.nan, "ear_der": np.nan, "ear_izq": np.nan,
+        "x1": np.nan, "y1": np.nan, "x2": np.nan, "y2": np.nan,
+        "score": np.nan, "piel": np.nan, "metodo": "sin_rostro"
+    }
+    if _es_puntero_lfs(ruta):
+        reg["metodo"] = "puntero_lfs"
+        return reg
+    img = _leer_imagen(ruta)
+    if img is None:
+        reg["metodo"] = "error_lectura"
+        return reg
+
+    # Restaurar relación de aspecto 16:9 original del DMD (640x360)
+    img_16_9 = cv2.resize(img, (ANCHO_16_9, ALTO_16_9), interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(img_16_9, cv2.COLOR_BGR2GRAY)
+
+    # Detector HOG de dlib (incluyendo umbral relajado si hace falta)
+    dets, scores, _ = _detector.run(gray, 0, -1.0)
+    candidatos = []
+    for d, s in zip(dets, scores):
+        x1, y1, x2, y2 = d.left(), d.top(), d.right(), d.bottom()
+        w, h = d.width(), d.height()
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        # Zona plausible de la cabeza del conductor en 640x360 (descarta cámara del tablero y pecho)
+        if not (180 <= cx <= 460 and 55 <= cy <= 255 and 80 <= w <= 220):
+            continue
+        piel = _fraccion_piel(img_16_9, x1, y1, x2, y2)
+        if piel < 0.20:
+            continue
+        candidatos.append((s, piel, d))
+
+    if not candidatos:
+        return reg
+
+    # Elegir el candidato con mayor score de dlib
+    s, piel, mejor_rect = max(candidatos, key=lambda t: t[0])
+    ear, ear_der, ear_izq, _ = _ear_desde_caja(gray, mejor_rect)
+    reg.update({
+        "ear": round(float(ear), 5),
+        "ear_der": round(float(ear_der), 5),
+        "ear_izq": round(float(ear_izq), 5),
+        "x1": int(mejor_rect.left()),
+        "y1": int(mejor_rect.top()),
+        "x2": int(mejor_rect.right()),
+        "y2": int(mejor_rect.bottom()),
+        "score": round(float(s), 3),
+        "piel": round(float(piel), 3),
+        "metodo": "dlib_estandar" if s >= 0.0 else "dlib_relajado",
+    })
+    return reg
+
+
+def _recalcular_caja_fija(arg):
+    """Para frames donde la caja detectada se desvió de la trayectoria del rostro del sujeto,
+    recalcula las landmarks de dlib usando la caja interpolada de la trayectoria del sujeto."""
+    ruta, x1, y1, x2, y2 = arg
+    img = _leer_imagen(ruta)
+    if img is None:
+        return ruta, np.nan, np.nan, np.nan
+    gray = cv2.cvtColor(cv2.resize(img, (ANCHO_16_9, ALTO_16_9), interpolation=cv2.INTER_CUBIC),
+                        cv2.COLOR_BGR2GRAY)
+    rect = dlib.rectangle(int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)))
+    ear, ear_der, ear_izq, _ = _ear_desde_caja(gray, rect)
+    return ruta, round(float(ear), 5), round(float(ear_der), 5), round(float(ear_izq), 5)
+
+
+def extraer_ear_dataset(args, ruta_cache):
     if ruta_cache.exists() and not args.recalcular:
-        print(f"Usando caché de EAR: {ruta_cache}  (usa --recalcular para rehacerla)")
+        print(f"Usando caché de EAR 16:9: {ruta_cache}")
         return pd.read_csv(ruta_cache)
 
-    print(f"Listando imágenes en {args.dir}")
-    tareas = listar_imagenes(args.dir, args.limite, args.semilla)
+    print(f"Listando imágenes en {args.dir}...")
+    tareas = listar_imagenes(args.dir, args.max_grabaciones)
     if not tareas:
         sys.exit("No se encontraron imágenes.")
 
-    # Verificación temprana de punteros Git LFS (evita procesar 88k archivos inútiles)
     muestra = tareas[:: max(1, len(tareas) // 200)]
-    n_ptr = sum(_es_puntero_lfs(r) for r, _ in muestra)
-    if n_ptr > 0.5 * len(muestra):
+    if sum(_es_puntero_lfs(r) for r, _ in muestra) > 0.5 * len(muestra):
         sys.exit(
             "\n[ERROR] Las imágenes son punteros de Git LFS (~130 bytes), no JPG reales.\n"
-            "        Descarga los archivos reales, por ejemplo:\n"
-            "            git lfs install\n"
-            '            git lfs pull --include="output/dmd_rgb/s5/eyes_state/**"\n'
-            "        (o copia las imágenes originales del DMD a esa carpeta) y vuelve a ejecutar."
+            "        Descárgalas con `git lfs pull` desde el repo original."
         )
 
     workers = args.workers or max(1, min(8, cpu_count() - 1))
-    print(f"\nExtrayendo EAR de {len(tareas)} imágenes con {workers} procesos...")
+    print(f"\nEtapa 1a: Extrayendo rostro y EAR (16:9 + dlib) de {len(tareas)} imágenes con {workers} procesos...")
     t0 = time.time()
     registros = []
-    with Pool(workers, initializer=_init_worker,
-              initargs=(args.modelo, args.detector, args.escala)) as pool:
-        for i, reg in enumerate(pool.imap(procesar_imagen, tareas, chunksize=32), 1):
+    with Pool(workers, initializer=_init_worker, initargs=(args.modelo,)) as pool:
+        for i, reg in enumerate(pool.imap(procesar_imagen_16_9, tareas, chunksize=32), 1):
             registros.append(reg)
-            if i % 2000 == 0 or i == len(tareas):
+            if i % 5000 == 0 or i == len(tareas):
                 v = time.time() - t0
                 print(f"  {i}/{len(tareas)}  ({i / v:.1f} img/s, ETA {(len(tareas) - i) / (i / v):.0f}s)")
 
     df = pd.DataFrame(registros)
-    # metadatos del nombre: face_<fecha>_<...>_<frame>.jpg
-    nombre = df["ruta"].map(lambda p: Path(p).stem)
-    df["frame"] = nombre.map(lambda s: int(m.group(1)) if (m := re.search(r"_(\d+)$", s)) else -1)
-    df["sesion"] = nombre.map(lambda s: s.rsplit("_", 1)[0])
-    # timestamp de la grabación (= un sujeto/video): face_<AAAA-MM-DD-HH;MM;SS>_<a>_<b>_<frame>
-    df["grabacion"] = nombre.map(
-        lambda s: m.group(1) if (m := re.match(r"face_(.+?)_\d+_\d+_\d+$", s)) else "desconocida")
+    meta = df["ruta"].map(meta_nombre)
+    df["grabacion"] = meta.map(lambda t: t[0])
+    df["frame"] = meta.map(lambda t: t[1])
+    df = df.sort_values(["grabacion", "frame"]).reset_index(drop=True)
+
+    # Etapa 1b: Verificación de consistencia espacial/temporal de la bounding box por grabación
+    # Si en algún fotograma no hubo detección o la caja saltó lejos de la trayectoria mediana
+    # del rostro (> 35 px en centro o > 35% en tamaño), se corrige con la caja mediana local.
+    tareas_recalc = []
+    indices_recalc = []
+    for g, sub in df.groupby("grabacion"):
+        cx = (sub["x1"] + sub["x2"]) / 2.0
+        cy = (sub["y1"] + sub["y2"]) / 2.0
+        w = sub["x2"] - sub["x1"]
+        h = sub["y2"] - sub["y1"]
+
+        cx_med = cx.rolling(31, min_periods=3, center=True).median().bfill().ffill()
+        cy_med = cy.rolling(31, min_periods=3, center=True).median().bfill().ffill()
+        w_med = w.rolling(31, min_periods=3, center=True).median().bfill().ffill()
+        h_med = h.rolling(31, min_periods=3, center=True).median().bfill().ffill()
+
+        dist_centro = np.hypot(cx - cx_med, cy - cy_med)
+        cambio_tam = (w - w_med).abs() / w_med.clip(lower=1.0)
+        invalida = sub["ear"].isna() | (dist_centro > 20.0) | (cambio_tam > 0.15)
+
+        for idx in sub.index[invalida]:
+            if np.isnan(cx_med.loc[idx]):
+                continue
+            bx1 = cx_med.loc[idx] - w_med.loc[idx] / 2.0
+            by1 = cy_med.loc[idx] - h_med.loc[idx] / 2.0
+            bx2 = cx_med.loc[idx] + w_med.loc[idx] / 2.0
+            by2 = cy_med.loc[idx] + h_med.loc[idx] / 2.0
+            tareas_recalc.append((df.loc[idx, "ruta"], bx1, by1, bx2, by2))
+            indices_recalc.append((idx, int(round(bx1)), int(round(by1)), int(round(bx2)), int(round(by2))))
+
+    if tareas_recalc:
+        print(f"Etapa 1b: Corrigiendo {len(tareas_recalc)} fotogramas con caja fuera de trayectoria o sin detección...")
+        with Pool(workers, initializer=_init_worker, initargs=(args.modelo,)) as pool:
+            res_recalc = list(pool.imap(_recalcular_caja_fija, tareas_recalc, chunksize=32))
+        for (idx, bx1, by1, bx2, by2), (_, ear, ear_der, ear_izq) in zip(indices_recalc, res_recalc):
+            df.loc[idx, ["ear", "ear_der", "ear_izq"]] = [ear, ear_der, ear_izq]
+            df.loc[idx, ["x1", "y1", "x2", "y2"]] = [bx1, by1, bx2, by2]
+            df.loc[idx, "metodo"] = "caja_trayectoria"
+
     ruta_cache.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(ruta_cache, index=False, encoding="utf-8-sig")
-    print(f"Caché de EAR guardada en: {ruta_cache}")
+    print(f"Caché guardada en: {ruta_cache}")
     return df
 
 
 # ---------------------------------------------------------
-# Etapa 2: umbral y métricas
+# Etapa 2: Calibración y Filtro Adaptativo en Cascada (AF_benchmark_EB8)
 # ---------------------------------------------------------
-def _muestra_calibracion(df, frac, rng, minimo=5):
-    """Índices de una muestra aleatoria de open y close (se excluyen luego de la evaluación)."""
-    idx_total = []
-    for clase in ("open", "close"):
-        idx = df.index[df["clase"] == clase].to_numpy()
-        if len(idx) == 0:
-            continue
-        n = min(len(idx), max(minimo, int(round(len(idx) * frac))))
-        idx_total += list(rng.choice(idx, size=n, replace=False))
-    return idx_total
+def seleccionar_muestra_calibracion(df, frac_calib=0.10, min_por_clase=25):
+    """Selecciona una muestra uniforme del 10% de frames 'open' y 'close' de cada grabación
+    como referencia de calibración del sujeto y los excluye de la evaluación."""
+    es_calib = np.zeros(len(df), dtype=bool)
+    paso = max(2, int(round(1.0 / max(frac_calib, 0.01))))
+    for _, sub in df.groupby("grabacion"):
+        for clase in ("open", "close"):
+            idx_c = sub.index[sub["clase"] == clase].to_numpy()
+            if len(idx_c) == 0:
+                continue
+            elegidos = idx_c[::paso]
+            if len(elegidos) < min_por_clase and len(idx_c) >= min_por_clase:
+                elegidos = idx_c[np.linspace(0, len(idx_c) - 1, min_por_clase, dtype=int)]
+            es_calib[elegidos] = True
+    return es_calib
 
 
-def _referencias(calib):
-    """(EAR abierto, piso) = mediana de EAR en open / close; None si falta alguna clase."""
-    o = calib.loc[calib["clase"] == "open", "ear"]
-    c = calib.loc[calib["clase"] == "close", "ear"]
-    if len(o) == 0 or len(c) == 0:
-        return None
-    return float(o.median()), float(c.median())
+def obtener_referencias_calibracion(df, es_calib, modo_calibracion):
+    """Devuelve un diccionario {grabacion: (ear_abierto_init, piso_init)} según el modo."""
+    cal = df[es_calib & df["ear"].notna()]
+    abierto_global = float(cal.loc[cal["clase"] == "open", "ear"].median())
+    piso_global = float(cal.loc[cal["clase"] == "close", "ear"].median())
+
+    refs = {}
+    for g, sub in df.groupby("grabacion"):
+        if modo_calibracion in ("fija_eb8", "fija_estatica"):
+            refs[g] = (EAR_ABIERTO_EB8, PISO_FISIOLOGICO_DLIB)
+        elif modo_calibracion == "dataset":
+            refs[g] = (abierto_global, piso_global)
+        else:  # "grabacion" (calibrado por individuo)
+            sub_cal = sub[es_calib[sub.index] & sub["ear"].notna()]
+            o = sub_cal.loc[sub_cal["clase"] == "open", "ear"]
+            c = sub_cal.loc[sub_cal["clase"] == "close", "ear"]
+            ab = float(o.median()) if len(o) >= 5 else abierto_global
+            pi = float(c.median()) if len(c) >= 5 else piso_global
+            refs[g] = (ab, pi)
+    return refs
 
 
-def calcular_umbral(df, args):
-    """Asigna a cada imagen su umbral individual.
-
-    Devuelve (df_eval, tabla_calibracion, descripcion). df_eval incluye las columnas:
-      ear_abierto, piso, umbral (= piso + (1-sensibilidad)*rango) y ear_norm
-      (EAR normalizado por sujeto: 0 = piso/cerrado, 1 = abierto).
-    Modos:
-      fija      : valores de EB8 para todos.
-      dataset   : un único par (abierto, piso) global.
-      grabacion : un par por grabación (= sujeto), el equivalente a la calibración individual
-                  del sistema en tiempo real. Es el modo recomendado: este dataset mezcla
-                  varios sujetos con EAR base muy distintos.
+def simular_secuencia_eb8(df, refs, modo_calibracion, modo_filtro, sensibilidad=SENSIBILIDAD_CIERRE):
+    """Ejecuta en orden cronológico (frame a frame por cada grabación) el algoritmo de
+    `AF_benchmark_EB8.py`:
+      - Doble filtro en cascada (Mediana de 5 frames -> Media móvil de 3s) protegido por guarda
+        (`not en_ciclo_parpadeo and ear > threshold_adaptativo_descenso`).
+      - Detección de estado cerrado cuando `ear_eval <= threshold_adaptativo_cierre`
+        (20% del rango de apertura).
     """
-    rng = np.random.default_rng(args.semilla)
-    df = df.copy()
-    if args.calibracion == "fija":
-        df["ear_abierto"], df["piso"] = EAR_ABIERTO_EB8, PISO_FISIOLOGICO_DLIB
-        df_eval, tabla = df, pd.DataFrame()
-        desc = "fija (valores calibrados en EB8)"
-    else:
-        calib_idx = _muestra_calibracion(df, args.frac_calib, rng)
-        ref_global = _referencias(df.loc[calib_idx])
-        df["ear_abierto"], df["piso"] = ref_global
-        filas = [{"grabacion": "GLOBAL", "n_calib": len(calib_idx),
-                  "ear_abierto": ref_global[0], "piso": ref_global[1]}]
-        if args.calibracion == "grabacion":
-            for g, sub in df.groupby("grabacion"):
-                idx_g = _muestra_calibracion(sub, args.frac_calib, rng)
-                ref = _referencias(df.loc[idx_g])
-                if ref is None or len(idx_g) < 10:
-                    ref, usado = ref_global, "global (pocos datos)"
-                else:
-                    calib_idx += [i for i in idx_g if i not in set(calib_idx)]
-                    usado = "propia"
-                df.loc[sub.index, "ear_abierto"] = ref[0]
-                df.loc[sub.index, "piso"] = ref[1]
-                filas.append({"grabacion": g, "n_calib": len(idx_g), "ear_abierto": ref[0],
-                              "piso": ref[1], "referencia": usado})
-        tabla = pd.DataFrame(filas)
-        df_eval = df.drop(index=sorted(set(calib_idx)))
-        desc = (f"{args.calibracion}: mediana EAR open/close con {args.frac_calib:.0%} de cada "
-                f"clase ({len(set(calib_idx))} imágenes de calibración, excluidas de la evaluación)")
-    rango = (df_eval["ear_abierto"] - df_eval["piso"]).clip(lower=0.02)
-    df_eval = df_eval.copy()
-    df_eval["umbral"] = df_eval["piso"] + (1.0 - args.sensibilidad) * rango
-    df_eval["ear_norm"] = (df_eval["ear"] - df_eval["piso"]) / rango
-    return df_eval, tabla, desc
+    n = len(df)
+    ear_eval_arr = np.zeros(n, dtype=float)
+    umbral_cierre_arr = np.zeros(n, dtype=float)
+    umbral_desc_arr = np.zeros(n, dtype=float)
+    ear_base_arr = np.zeros(n, dtype=float)
+    piso_arr = np.zeros(n, dtype=float)
+    pred_arr = np.zeros(n, dtype=int)
+
+    usar_adaptativo = (modo_filtro in ("adaptativo_eb8", "adaptativo_eb8_suav")) and (modo_calibracion != "fija_estatica")
+    suavizar_ear = (modo_filtro == "adaptativo_eb8_suav")
+
+    for g, sub in df.groupby("grabacion", sort=False):
+        ear_abierto_init, piso_fijo = refs[g]
+        ear_base_abierto = ear_abierto_init
+
+        rango_min = 0.04
+        rango_inicial = max(rango_min, ear_base_abierto - piso_fijo)
+        thr_cierre = piso_fijo + ((1.0 - sensibilidad) * rango_inicial)
+        thr_descenso = piso_fijo + (FACTOR_DESCENSO * rango_inicial)
+        thr_estatico_cierre = thr_cierre
+
+        # Filtros en cascada idénticos a AF_benchmark_EB8.py
+        buffer_crudo_ear = deque(maxlen=5)
+        buffer_mediano_ear = deque(maxlen=int(3.0 * FPS_DMD))
+        buffer_suav_corto = deque(maxlen=3)
+
+        # Pre-llenado suave en modos calibrados para estabilidad desde el frame 0
+        for _ in range(buffer_crudo_ear.maxlen):
+            buffer_crudo_ear.append(ear_base_abierto)
+
+        en_ciclo_parpadeo = False
+        ultimo_frame_fin = -COOLDOWN_FRAMES
+        ultimo_ear_valido = ear_base_abierto
+
+        idxs = sub.index.to_numpy()
+        ears = sub["ear"].to_numpy()
+        frames = sub["frame"].to_numpy()
+
+        for k in range(len(idxs)):
+            idx = idxs[k]
+            f_idx = frames[k]
+            e_frame = ears[k]
+
+            if not np.isnan(e_frame) and e_frame > 0.0:
+                ear_crudo = float(e_frame)
+                ultimo_ear_valido = ear_crudo
+            else:
+                ear_crudo = ultimo_ear_valido
+
+            buffer_suav_corto.append(ear_crudo)
+            ear_eval = float(np.median(buffer_suav_corto)) if suavizar_ear else ear_crudo
+
+            # ---------------------------------------------------------
+            # Actualización Dinámica con Doble Filtro en Cascada (AF_benchmark_EB8)
+            # ---------------------------------------------------------
+            if usar_adaptativo:
+                if not en_ciclo_parpadeo and ear_crudo > thr_descenso:
+                    buffer_crudo_ear.append(ear_crudo)
+                    if len(buffer_crudo_ear) == buffer_crudo_ear.maxlen:
+                        ear_mediano = float(np.median(buffer_crudo_ear))
+                        buffer_mediano_ear.append(ear_mediano)
+                        if len(buffer_mediano_ear) >= 15:
+                            ear_base_abierto = float(np.mean(buffer_mediano_ear))
+                            rango_movil = max(rango_min, ear_base_abierto - piso_fijo)
+                            thr_cierre = piso_fijo + ((1.0 - sensibilidad) * rango_movil)
+                            thr_descenso = piso_fijo + (FACTOR_DESCENSO * rango_movil)
+
+                # En modos calibrados con el propio sujeto, mantener candado inferior estático;
+                # en fija_eb8 (sin calibración previa del sujeto), permitir adaptarse libremente.
+                if modo_calibracion in ("grabacion", "dataset") and thr_cierre < thr_estatico_cierre:
+                    thr_cierre = thr_estatico_cierre
+
+            # ---------------------------------------------------------
+            # Máquina de estados del ciclo de parpadeo (guarda del filtro)
+            # ---------------------------------------------------------
+            if ear_eval < thr_descenso:
+                if not en_ciclo_parpadeo and (f_idx - ultimo_frame_fin) > COOLDOWN_FRAMES:
+                    en_ciclo_parpadeo = True
+            else:
+                if en_ciclo_parpadeo:
+                    ultimo_frame_fin = f_idx - 1
+                    en_ciclo_parpadeo = False
+
+            # Predicción frame a frame (igual que ojo_cerrado_pred en AF_benchmark_EB8.py)
+            ojo_cerrado_pred = 1 if ear_eval <= thr_cierre else 0
+
+            ear_eval_arr[idx] = ear_eval
+            umbral_cierre_arr[idx] = thr_cierre
+            umbral_desc_arr[idx] = thr_descenso
+            ear_base_arr[idx] = ear_base_abierto
+            piso_arr[idx] = piso_fijo
+            pred_arr[idx] = ojo_cerrado_pred
+
+    out = df.copy()
+    out["ear_eval"] = ear_eval_arr
+    out["ear_abierto_ref"] = ear_base_arr
+    out["piso_ref"] = piso_arr
+    out["umbral"] = umbral_cierre_arr
+    out["umbral_descenso"] = umbral_desc_arr
+    rango = np.clip(out["ear_abierto_ref"] - out["piso_ref"], 0.02, None)
+    out["ear_norm"] = (out["ear_eval"] - out["piso_ref"]) / rango
+    out["pred"] = pred_arr
+    return out
+
+
+# ---------------------------------------------------------
+# Métricas y Gráficas
+# ---------------------------------------------------------
+ESCENARIOS = {
+    "A_open_vs_close (estricto)": {"open": 0, "close": 1},
+    "B_open+opening_vs_close+closing": {"open": 0, "opening": 0, "close": 1, "closing": 1},
+}
 
 
 def metricas_binarias(y_true, y_pred, scores_cerrado):
-    """Clase positiva = ojo cerrado (1)."""
     y_true, y_pred = np.asarray(y_true), np.asarray(y_pred)
     tp = int(((y_true == 1) & (y_pred == 1)).sum())
     tn = int(((y_true == 0) & (y_pred == 0)).sum())
@@ -317,11 +516,10 @@ def metricas_binarias(y_true, y_pred, scores_cerrado):
     fn = int(((y_true == 1) & (y_pred == 0)).sum())
     div = lambda a, b: a / b if b > 0 else 0.0
     prec, rec, esp = div(tp, tp + fp), div(tp, tp + fn), div(tn, tn + fp)
-    # AUC independiente del umbral (Mann-Whitney)
     n1, n0 = int((y_true == 1).sum()), int((y_true == 0).sum())
     if n1 and n0:
         r = rankdata(scores_cerrado)
-        auc = (r[y_true == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0)
+        auc = float((r[y_true == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
     else:
         auc = float("nan")
     return {
@@ -333,210 +531,293 @@ def metricas_binarias(y_true, y_pred, scores_cerrado):
     }
 
 
-def mejor_umbral_oraculo(y_true, ear):
-    """Umbral que maximiza balanced accuracy (SOLO diagnóstico: usa las etiquetas de evaluación)."""
-    y_true, ear = np.asarray(y_true), np.asarray(ear)
-    cand = np.unique(np.quantile(ear, np.linspace(0.01, 0.99, 197)))
-    mejor, mejor_ba = cand[0], -1
-    for t in cand:
-        pred = (ear <= t).astype(int)
-        rec = ((pred == 1) & (y_true == 1)).sum() / max(1, (y_true == 1).sum())
-        esp = ((pred == 0) & (y_true == 0)).sum() / max(1, (y_true == 0).sum())
-        if (rec + esp) / 2 > mejor_ba:
-            mejor, mejor_ba = t, (rec + esp) / 2
-    return float(mejor), float(mejor_ba)
+def evaluar_escenario(df_eval, mapa):
+    d = df_eval[df_eval["clase"].isin(mapa) & df_eval["ear_eval"].notna()].copy()
+    if d.empty or d["clase"].map(mapa).nunique() < 2:
+        return None, None
+    d["gt"] = d["clase"].map(mapa)
+    # Score continuo de cierre: distancia por debajo del umbral normalizada por el rango
+    score_cierre = -d["ear_norm"].to_numpy()
+    return metricas_binarias(d["gt"], d["pred"], score_cierre), d
 
 
 def graficar_confusion(m, titulo, ruta):
     cm = np.array([[m["TN"], m["FP"]], [m["FN"], m["TP"]]])
-    fig, ax = plt.subplots(figsize=(5, 4.5))
+    fig, ax = plt.subplots(figsize=(5.2, 4.6))
     ax.imshow(cm, cmap="Blues")
-    etiquetas = ["Abierto", "Cerrado"]
-    ax.set_xticks([0, 1], etiquetas)
-    ax.set_yticks([0, 1], etiquetas)
-    ax.set_xlabel("Predicción")
-    ax.set_ylabel("Ground truth (DMD)")
-    ax.set_title(titulo, fontsize=10)
+    ax.set_xticks([0, 1], ["Abierto (Pred)", "Cerrado (Pred)"])
+    ax.set_yticks([0, 1], ["Abierto (GT)", "Cerrado (GT)"])
+    ax.set_title(titulo, fontsize=9.5)
     for i in range(2):
         for j in range(2):
-            ax.text(j, i, f"{cm[i, j]}\n({cm[i, j] / max(1, cm[i].sum()):.1%})", ha="center",
-                    va="center", color="white" if cm[i, j] > cm.max() / 2 else "black")
+            ax.text(j, i, f"{cm[i, j]}\n({cm[i, j] / max(1, cm[i].sum()):.1%})",
+                    ha="center", va="center",
+                    color="white" if cm[i, j] > cm.max() / 2 else "black", fontsize=10)
     fig.tight_layout()
     fig.savefig(ruta, dpi=150)
     plt.close(fig)
 
 
 def graficar_distribucion(df_eval, sensibilidad, ruta):
-    """Distribución del EAR normalizado por sujeto (0 = piso/cerrado, 1 = abierto)."""
     colores = {"open": "tab:green", "opening": "tab:olive", "closing": "tab:orange", "close": "tab:red"}
     fig, ax = plt.subplots(figsize=(9, 4.8))
-    bins = np.linspace(-0.5, 2.0, 100)
+    bins = np.linspace(-0.5, 1.8, 95)
     for clase in ("open", "opening", "closing", "close"):
         v = df_eval.loc[df_eval["clase"] == clase, "ear_norm"].dropna()
         if len(v):
-            ax.hist(v.clip(-0.5, 2.0), bins=bins, density=True, alpha=0.5, color=colores[clase],
-                    label=f"{clase} (n={len(v)})")
-    ax.axvline(1.0 - sensibilidad, color="k", ls="--",
-               label=f"Umbral de cierre = {1.0 - sensibilidad:.2f} del rango")
-    ax.set_xlabel("EAR normalizado por sujeto  (0 = ojo cerrado típico, 1 = ojo abierto típico)")
+            ax.hist(v.clip(-0.5, 1.8), bins=bins, density=True, alpha=0.5,
+                    color=colores[clase], label=f"{clase} (n={len(v)})")
+    ax.axvline(1.0 - sensibilidad, color="k", ls="--", lw=1.5,
+               label=f"Umbral cierre = {1.0 - sensibilidad:.2f} (20% apertura)")
+    ax.set_xlabel("EAR relativo al rango del individuo (0 = cerrado base, 1 = abierto base)")
     ax.set_ylabel("Densidad")
-    ax.set_title("Distribución del EAR normalizado por carpeta del DMD")
-    ax.legend(fontsize=8)
+    ax.set_title("Distribución del EAR Normalizado por Carpeta del DMD (16:9 + dlib)")
+    ax.legend(fontsize=8.5)
     fig.tight_layout()
     fig.savefig(ruta, dpi=150)
     plt.close(fig)
 
 
 def graficar_pct_cerrado(tabla, ruta):
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(6.2, 4.2))
     orden = [c for c in ("open", "opening", "closing", "close") if c in tabla.index]
     vals = [tabla.loc[c, "Pct_pred_cerrado"] for c in orden]
     barras = ax.bar(orden, vals, color=["tab:green", "tab:olive", "tab:orange", "tab:red"][:len(orden)])
     for b, v in zip(barras, vals):
-        ax.text(b.get_x() + b.get_width() / 2, v + 1, f"{v:.1f}%", ha="center")
-    ax.set_ylim(0, 110)
-    ax.set_ylabel("% predichas como OJO CERRADO")
-    ax.set_title("Predicción del sistema por carpeta del DMD")
+        ax.text(b.get_x() + b.get_width() / 2, v + 1.5, f"{v:.1f}%", ha="center", fontweight="bold")
+    ax.set_ylim(0, 112)
+    ax.set_ylabel("% predicho como OJO CERRADO")
+    ax.set_title("Porcentaje Predicho como Cerrado por Carpeta del DMD")
     fig.tight_layout()
     fig.savefig(ruta, dpi=150)
     plt.close(fig)
 
 
-def guardar_errores(df_a, n, dir_salida):
-    """Guarda ejemplos anotados de falsos positivos / negativos (equivalente a los clips de FP de EB8)."""
+def graficar_serie_temporal(df_sim, ruta, ventana=600):
+    """Grafica una ventana continua de 600 frames mostrando el EAR, el umbral adaptativo y los
+    cierres reales (ground truth)."""
+    mejor = None
+    for g, sub in df_sim.groupby("grabacion"):
+        cerr = (sub["clase"] == "close").astype(int).to_numpy()
+        if len(cerr) < ventana:
+            continue
+        s = np.convolve(cerr, np.ones(ventana), mode="valid")
+        if mejor is None or s.max() > mejor[0]:
+            mejor = (s.max(), g, int(s.argmax()))
+    if mejor is None:
+        return
+    _, g, ini = mejor
+    sub = df_sim[df_sim["grabacion"] == g].iloc[ini:ini + ventana]
+    fr = sub["frame"].to_numpy()
+
+    fig, ax = plt.subplots(figsize=(11.5, 4.2))
+    ax.plot(fr, sub["ear"].to_numpy(), color="lightgray", lw=0.9, label="EAR crudo")
+    ax.plot(fr, sub["ear_eval"].to_numpy(), color="tab:blue", lw=1.4, label="EAR evaluado")
+    ax.plot(fr, sub["ear_abierto_ref"].to_numpy(), color="tab:green", ls=":", lw=1.2,
+            label="EAR base abierto (adaptativo)")
+    ax.plot(fr, sub["umbral"].to_numpy(), "k--", lw=1.3, label="Umbral adaptativo cierre (20%)")
+    cerr = (sub["clase"] == "close").to_numpy()
+    ax.fill_between(fr, 0, 1, where=cerr, transform=ax.get_xaxis_transform(),
+                    color="tab:red", alpha=0.22, label="GT: close")
+    ax.set_xlabel("Frame")
+    ax.set_ylabel("EAR")
+    ax.set_title(f"Secuencia Temporal y Filtro Adaptativo (Grabación {g})")
+    ax.legend(fontsize=8, ncol=5)
+    fig.tight_layout()
+    fig.savefig(ruta, dpi=150)
+    plt.close(fig)
+
+
+def guardar_ejemplos_errores(d_a, n, dir_salida, modelo_path):
+    """Guarda hasta `n` imágenes de Falsos Positivos y Falsos Negativos con la caja y landmarks."""
+    _init_worker(modelo_path)
     rng = np.random.default_rng(0)
-    for tipo, filtro in (("FP", (df_a["gt"] == 0) & (df_a["pred"] == 1)),
-                         ("FN", (df_a["gt"] == 1) & (df_a["pred"] == 0))):
-        sub = df_a[filtro]
+    for tipo, filtro in (("FP", (d_a["gt"] == 0) & (d_a["pred"] == 1)),
+                         ("FN", (d_a["gt"] == 1) & (d_a["pred"] == 0))):
+        sub = d_a[filtro]
         if sub.empty:
             continue
         carpeta = Path(dir_salida) / "errores" / tipo
         carpeta.mkdir(parents=True, exist_ok=True)
-        for _, r in sub.iloc[rng.choice(len(sub), size=min(n, len(sub)), replace=False)].iterrows():
-            img = cv2.imdecode(np.fromfile(r["ruta"], dtype=np.uint8), cv2.IMREAD_COLOR)
+        for f_old in carpeta.glob("*.jpg"):
+            try:
+                f_old.unlink()
+            except OSError:
+                pass
+        elegidos = sub.iloc[rng.choice(len(sub), size=min(n, len(sub)), replace=False)]
+        for _, r in elegidos.iterrows():
+            img = _leer_imagen(r["ruta"])
             if img is None:
                 continue
-            txt = f"{tipo} GT={r['clase']} EAR={r['ear']:.3f} thr={r['umbral']:.3f}"
-            cv2.putText(img, txt, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-            nombre = f"{r['ear']:.3f}_{Path(r['ruta']).stem.replace(';', '-')}.jpg"
-            cv2.imencode(".jpg", img)[1].tofile(str(carpeta / nombre))
+            vis = cv2.resize(img, (ANCHO_16_9, ALTO_16_9), interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(vis, cv2.COLOR_BGR2GRAY)
+            if not np.isnan(r["x1"]):
+                x1, y1, x2, y2 = int(r["x1"]), int(r["y1"]), int(r["x2"]), int(r["y2"])
+                cv2.rectangle(vis, (x1, y1), (x2, y2), (255, 120, 0), 2)
+                _, _, _, pts = _ear_desde_caja(gray, dlib.rectangle(x1, y1, x2, y2))
+                for (px, py) in pts[36:48].astype(int):
+                    cv2.circle(vis, (px, py), 2, (0, 0, 255), -1)
+            txt = f"{tipo} | GT:{r['clase']} | EAR:{r['ear_eval']:.3f} | Thr:{r['umbral']:.3f} | {r['grabacion']}"
+            cv2.putText(vis, txt, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 255), 2)
+            nombre = f"{r['grabacion'].replace(';', '-')}_frame{int(r['frame']):05d}.jpg"
+            cv2.imencode(".jpg", vis)[1].tofile(str(carpeta / nombre))
 
 
+# ---------------------------------------------------------
+# Ejecución Principal
+# ---------------------------------------------------------
 def main():
-    ap = argparse.ArgumentParser(description="Benchmark EAR/dlib por imagen sobre DMD eyes_state")
-    ap.add_argument("--dir", default=str(DIR_EYES_STATE), help="carpeta eyes_state")
-    ap.add_argument("--salida", default=str(DIR_SALIDA), help="carpeta de resultados")
-    ap.add_argument("--modelo", default=str(MODELO_DLIB), help="shape_predictor_68_face_landmarks.dat")
-    ap.add_argument("--workers", type=int, default=0, help="procesos paralelos (0 = auto)")
-    ap.add_argument("--limite", type=int, default=0, help="máx. imágenes por carpeta (0 = todas)")
-    ap.add_argument("--calibracion", choices=["grabacion", "dataset", "fija"], default="grabacion",
-                    help="grabacion: umbral individual por sujeto (recomendado); "
-                         "dataset: un solo umbral global; fija: valores de EB8")
-    ap.add_argument("--frac-calib", type=float, default=0.10,
-                    help="fracción de open/close usada para calibrar (se excluye de la evaluación)")
+    ap = argparse.ArgumentParser(description="Benchmark DMD eyes_state con secuencia temporal y filtro adaptativo EB8")
+    ap.add_argument("--dir", default=str(DIR_EYES_STATE), help="Carpeta eyes_state del DMD")
+    ap.add_argument("--salida", default=str(DIR_SALIDA), help="Carpeta de salida para resultados")
+    ap.add_argument("--modelo", default=str(MODELO_DLIB), help="Ruta a shape_predictor_68_face_landmarks.dat")
+    ap.add_argument("--workers", type=int, default=0, help="Procesos en paralelo (0 = auto)")
+    ap.add_argument("--max-grabaciones", type=int, default=0, help="Limitar a N grabaciones (0 = las 16 completas)")
+    ap.add_argument("--calibracion", choices=CALIBRACIONES, default="grabacion",
+                    help="Modo de calibración principal: grabacion | dataset | fija_eb8 | fija_estatica")
+    ap.add_argument("--filtro", choices=MODOS_FILTRO, default="adaptativo_eb8_suav",
+                    help="Modo de filtrado principal: crudo_estatico | adaptativo_eb8 | adaptativo_eb8_suav")
     ap.add_argument("--sensibilidad", type=float, default=SENSIBILIDAD_CIERRE,
-                    help="0.80 -> umbral al 20%% inferior del rango del individuo")
-    ap.add_argument("--semilla", type=int, default=42)
-    ap.add_argument("--detector", choices=["cascada", "dlib"], default="cascada",
-                    help="cascada: Haar -> dlib relajado (recomendado para este dataset); "
-                         "dlib: solo el HOG de dlib")
-    ap.add_argument("--escala", type=float, default=3.0,
-                    help="factor de ampliación de la imagen antes de detectar/predecir landmarks")
-    ap.add_argument("--recalcular", action="store_true", help="ignorar caché de EAR")
-    ap.add_argument("--guardar-errores", type=int, default=20,
-                    help="nº de ejemplos de FP/FN a guardar (0 = ninguno)")
+                    help="0.80 -> umbral al 20%% inferior del rango de apertura")
+    ap.add_argument("--frac-calib", type=float, default=0.10,
+                    help="Fracción de frames open y close por grabación usada para calibración inicial")
+    ap.add_argument("--guardar-errores", type=int, default=50,
+                    help="Cantidad de imágenes de FP y FN a guardar en errores/ (0 = ninguna)")
+    ap.add_argument("--recalcular", action="store_true", help="Re-extraer EAR ignorando la caché")
     args = ap.parse_args()
 
     salida = Path(args.salida)
     salida.mkdir(parents=True, exist_ok=True)
-    nombre_cache = "ear_por_imagen.csv" if not args.limite else f"ear_por_imagen_limite{args.limite}.csv"
-    df = extraer_ears(args, salida / nombre_cache)
+    suf = f"_g{args.max_grabaciones}" if args.max_grabaciones else ""
+    ruta_cache = salida / f"ear_16_9_dlib{suf}.csv"
 
-    # --- cobertura de detección ---
-    print("\nMétodo de localización de rostro:")
+    # 1. Extraer EAR con proporción 16:9 restaurada y dlib nativo
+    df = extraer_ear_dataset(args, ruta_cache)
+    print("\nCobertura de detección de rostro (16:9 + dlib):")
     print(df["metodo"].value_counts().to_string())
-    df_valido = df[df["ear"].notna()].reset_index(drop=True)
-    n_sin = len(df) - len(df_valido)
-    if n_sin:
-        print(f"[AVISO] {n_sin} imágenes sin EAR (excluidas de las métricas).")
-    if df_valido.empty:
-        sys.exit("Ninguna imagen produjo un EAR válido.")
 
-    # --- umbral individual ---
-    df_eval, tabla_calib, desc = calcular_umbral(df_valido, args)
-    df_eval["pred"] = (df_eval["ear"] <= df_eval["umbral"]).astype(int)   # 1 = cerrado
-    print(f"\nCalibración {desc}")
-    if not tabla_calib.empty:
-        print(tabla_calib.round(4).to_string(index=False))
-        tabla_calib.to_csv(salida / "calibracion_por_grabacion.csv", index=False, encoding="utf-8-sig")
-    print(f"Umbral medio de cierre = {df_eval['umbral'].mean():.4f} "
-          f"(rango entre sujetos: {df_eval['umbral'].min():.3f} - {df_eval['umbral'].max():.3f})")
+    # 2. Separar muestra de calibración inicial (excluida de las métricas para todos los modos)
+    es_calib = seleccionar_muestra_calibracion(df, args.frac_calib)
+    mask_eval = ~es_calib
+    print(f"\nFrames totales: {len(df)} | Frames de calibración inicial excluidos: {es_calib.sum()} "
+          f"({es_calib.mean():.1%}) | Frames de evaluación: {mask_eval.sum()}")
 
-    # --- tabla por carpeta ---
-    tabla = df_eval.groupby("clase").agg(
-        N=("pred", "size"), EAR_mediana=("ear", "median"), EAR_norm_mediana=("ear_norm", "median"),
-        Pct_pred_cerrado=("pred", lambda s: 100.0 * s.mean()))
+    # 3. Comparativa cuantitativa de todas las combinaciones (Calibración x Filtro)
+    filas_comp = []
+    for cal in CALIBRACIONES:
+        refs = obtener_referencias_calibracion(df, es_calib, cal)
+        for flt in MODOS_FILTRO:
+            if cal == "fija_estatica" and flt != "crudo_estatico" and flt == "adaptativo_eb8":
+                continue
+            df_sim = simular_secuencia_eb8(df, refs, cal, flt, args.sensibilidad)
+            df_ev = df_sim[mask_eval]
+            fila = {"calibracion": cal, "filtro": flt}
+            for nombre_esc, mapa in ESCENARIOS.items():
+                m, _ = evaluar_escenario(df_ev, mapa)
+                if m:
+                    k = nombre_esc[0]
+                    fila.update({
+                        f"{k}_N": m["N"],
+                        f"{k}_Acc": m["Accuracy"],
+                        f"{k}_BalAcc": m["Balanced_Accuracy"],
+                        f"{k}_Recall": m["Recall"],
+                        f"{k}_Espec": m["Especificidad"],
+                        f"{k}_Prec": m["Precision"],
+                        f"{k}_F1": m["F1"],
+                        f"{k}_AUC": m["AUC_ROC"],
+                    })
+            filas_comp.append(fila)
+
+    df_comp = pd.DataFrame(filas_comp)
+    df_comp.to_csv(salida / "comparacion_configuraciones.csv", index=False, encoding="utf-8-sig")
+
+    print("\n" + "=" * 105)
+    print(" TABLA COMPARATIVA DE CONFIGURACIONES (Escenario A: open vs close)")
+    print("=" * 105)
+    cols_mostrar = ["calibracion", "filtro", "A_Acc", "A_BalAcc", "A_Recall", "A_Espec", "A_Prec", "A_F1", "A_AUC"]
+    print(df_comp[cols_mostrar].round(4).to_string(index=False))
+
+    # 4. Evaluación detallada de la configuración principal seleccionada
+    refs_main = obtener_referencias_calibracion(df, es_calib, args.calibracion)
+    df_main = simular_secuencia_eb8(df, refs_main, args.calibracion, args.filtro, args.sensibilidad)
+    df_eval = df_main[mask_eval].copy()
+
+    # Guardar tabla de referencias por grabación
+    filas_ref = []
+    for g, (ab_i, pi_i) in sorted(refs_main.items()):
+        sub_g = df_main[df_main["grabacion"] == g]
+        filas_ref.append({
+            "grabacion": g,
+            "ear_abierto_inicial": round(ab_i, 4),
+            "ear_abierto_medio_adapt": round(float(sub_g["ear_abierto_ref"].mean()), 4),
+            "piso_cerrado": round(pi_i, 4),
+            "umbral_cierre_medio": round(float(sub_g["umbral"].mean()), 4),
+        })
+    df_refs = pd.DataFrame(filas_ref)
+    df_refs.to_csv(salida / "calibracion_por_grabacion.csv", index=False, encoding="utf-8-sig")
+
+    print("\n" + "=" * 105)
+    print(f" RESULTADOS DETALLADOS - CONFIGURACIÓN PRINCIPAL: calibracion={args.calibracion} | filtro={args.filtro}")
+    print("=" * 105)
+    print("\nParámetros de EAR y umbral (20% del rango) por grabación:")
+    print(df_refs.to_string(index=False))
+
+    tabla_carpetas = df_eval.groupby("clase").agg(
+        N=("pred", "size"),
+        EAR_mediana=("ear_eval", "median"),
+        EAR_norm_mediana=("ear_norm", "median"),
+        Pct_pred_cerrado=("pred", lambda s: 100.0 * s.mean()),
+    )
     print("\nPredicción por carpeta del DMD:")
-    print(tabla.round(4).to_string())
+    print(tabla_carpetas.round(4).to_string())
 
-    # --- escenarios ---
-    escenarios = {
-        "A_open_vs_close (estricto)": {"open": 0, "close": 1},
-        "B_open+opening_vs_close+closing": {"open": 0, "opening": 0, "close": 1, "closing": 1},
-    }
-    filas = []
-    df_a = None
-    for nombre, mapa in escenarios.items():
-        d = df_eval[df_eval["clase"].isin(mapa)].copy()
-        if d.empty or d["clase"].map(mapa).nunique() < 2:
+    filas_resumen = []
+    d_a = None
+    for nombre_esc, mapa in ESCENARIOS.items():
+        m, d_esc = evaluar_escenario(df_eval, mapa)
+        if m is None:
             continue
-        d["gt"] = d["clase"].map(mapa)
-        m = metricas_binarias(d["gt"], d["pred"], -d["ear_norm"].to_numpy())
-        thr_or, ba_or = mejor_umbral_oraculo(d["gt"], d["ear_norm"])
-        m["Umbral_oraculo_norm(diagnostico)"] = thr_or
-        m["BalAcc_oraculo(diagnostico)"] = ba_or
-        filas.append({"Escenario": nombre, **m})
-        if nombre.startswith("A_"):
-            df_a = d
-        graficar_confusion(m, f"{nombre}\nBalAcc={m['Balanced_Accuracy']:.3f}",
-                           salida / f"matriz_confusion_{nombre.split('_')[0]}.png")
+        filas_resumen.append({"Escenario": nombre_esc, **m})
+        if nombre_esc.startswith("A_"):
+            d_a = d_esc
+        graficar_confusion(
+            m,
+            f"{nombre_esc}\ncal={args.calibracion} | filtro={args.filtro}\n"
+            f"Acc={m['Accuracy']:.3f} | BalAcc={m['Balanced_Accuracy']:.3f} | AUC={m['AUC_ROC']:.3f}",
+            salida / f"matriz_confusion_{nombre_esc[0]}.png",
+        )
 
-    resumen = pd.DataFrame(filas)
-    print("\n" + "=" * 60)
-    print(" RESULTADOS BENCHMARK DMD (evaluación por imagen)")
-    print("=" * 60)
-    for _, r in resumen.iterrows():
+    df_resumen = pd.DataFrame(filas_resumen)
+    for _, r in df_resumen.iterrows():
         print(f"\n[{r['Escenario']}]  N={int(r['N'])}")
         print(f"  TP={int(r['TP'])}  TN={int(r['TN'])}  FP={int(r['FP'])}  FN={int(r['FN'])}")
         for k in ("Accuracy", "Balanced_Accuracy", "Precision", "Recall", "Especificidad", "F1", "AUC_ROC"):
             print(f"  {k:18s}: {r[k]:.4f}")
-        print(f"  (diagnóstico) umbral óptimo (EAR normalizado) = {r['Umbral_oraculo_norm(diagnostico)']:.3f} "
-              f"[el usado es {1.0 - args.sensibilidad:.2f}] -> BalAcc {r['BalAcc_oraculo(diagnostico)']:.4f}")
-    print("=" * 60)
 
-    # --- métricas por grabación (escenario A) ---
-    if df_a is not None:
+    if d_a is not None:
         filas_g = []
-        for g, sub in df_a.groupby("grabacion"):
-            if sub["gt"].nunique() == 2:
-                filas_g.append({"grabacion": g, **metricas_binarias(sub["gt"], sub["pred"],
-                                                                    -sub["ear_norm"].to_numpy())})
+        for g, sub_g in d_a.groupby("grabacion"):
+            if sub_g["gt"].nunique() == 2:
+                mg = metricas_binarias(sub_g["gt"], sub_g["pred"], -sub_g["ear_norm"].to_numpy())
+                filas_g.append({"grabacion": g, **mg})
         if filas_g:
-            por_grab = pd.DataFrame(filas_g)
-            por_grab.to_csv(salida / "metricas_por_grabacion_A.csv", index=False, encoding="utf-8-sig")
-            print("\nEscenario A por grabación (sujeto):")
-            print(por_grab[["grabacion", "N", "Balanced_Accuracy", "Recall", "Especificidad", "AUC_ROC"]]
-                  .round(3).to_string(index=False))
+            df_por_grab = pd.DataFrame(filas_g)
+            df_por_grab.to_csv(salida / "metricas_por_grabacion_A.csv", index=False, encoding="utf-8-sig")
+            print("\nDesempeño por grabación/sujeto (Escenario A: open vs close):")
+            cols_g = ["grabacion", "N", "Accuracy", "Balanced_Accuracy", "Recall", "Especificidad", "Precision", "F1", "AUC_ROC"]
+            print(df_por_grab[cols_g].round(4).to_string(index=False))
 
-    # --- exportes ---
-    resumen.to_csv(salida / "metricas_resumen.csv", index=False, encoding="utf-8-sig")
-    tabla.to_csv(salida / "prediccion_por_carpeta.csv", encoding="utf-8-sig")
+    # Exportar archivos y gráficas
+    df_resumen.to_csv(salida / "metricas_resumen.csv", index=False, encoding="utf-8-sig")
+    tabla_carpetas.to_csv(salida / "prediccion_por_carpeta.csv", encoding="utf-8-sig")
     df_eval.to_csv(salida / "predicciones_por_imagen.csv", index=False, encoding="utf-8-sig")
     graficar_distribucion(df_eval, args.sensibilidad, salida / "distribucion_ear.png")
-    graficar_pct_cerrado(tabla, salida / "pct_cerrado_por_carpeta.png")
-    if args.guardar_errores and df_a is not None:
-        guardar_errores(df_a, args.guardar_errores, salida)
-    print(f"\nResultados exportados en: {salida}")
+    graficar_pct_cerrado(tabla_carpetas, salida / "pct_cerrado_por_carpeta.png")
+    graficar_serie_temporal(df_main, salida / "serie_temporal_ejemplo.png")
+    if args.guardar_errores and d_a is not None:
+        guardar_ejemplos_errores(d_a, args.guardar_errores, salida, args.modelo)
+
+    print(f"\nResultados y gráficas exportados en: {salida}")
 
 
 if __name__ == "__main__":
