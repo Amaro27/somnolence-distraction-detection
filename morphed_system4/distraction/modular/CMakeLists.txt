@@ -18,7 +18,8 @@ else()
         add_compile_options(-mavx2)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
         # 64-bit ARM (Raspberry Pi OS 64-bit) enables NEON automatically with -O3
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "armv7l|armhf")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "armv7l|armv8l|armhf")
+        # 32-bit ARM (Raspberry Pi OS 32-bit)
         add_compile_options(-mfpu=neon-vfpv4 -mfloat-abi=hard)
     endif()
 endif()
@@ -78,6 +79,11 @@ target_link_libraries(modular_distraction PRIVATE
 
 if(WIN32)
     target_link_libraries(modular_distraction PRIVATE winmm)
+elseif(UNIX AND NOT APPLE)
+    find_library(ATOMIC_LIB atomic)
+    if(ATOMIC_LIB)
+        target_link_libraries(modular_distraction PRIVATE ${ATOMIC_LIB})
+    endif()
 endif()
 
 # Ensure input/ directory is mirrored to build output directory
