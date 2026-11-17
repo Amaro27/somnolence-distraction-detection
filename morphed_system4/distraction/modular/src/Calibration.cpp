@@ -37,7 +37,7 @@ bool measure_window(
             return false;
         }
 
-        ctx.audio.play(cfg.cadence_beep_path);
+        ctx.audio.play(cfg.cadence_beep_path, 3.0f);
 
         const auto next_beep_deadline =
             window_start + cfg.beep_interval * static_cast<long long>(i + 1);
@@ -92,7 +92,7 @@ std::optional<CalibrationResult> run_calibration(
         ctx.visualizer->update_calibration("Phase 1: Look straight ahead (eyes open)", 0, cfg.min_samples_per_window);
     }
 
-    ctx.audio.play_blocking(cfg.phase1_instructions_path);
+    ctx.audio.play_blocking(cfg.phase1_instructions_path, 6.0f); // +6dB gain for voice instructions
     if (ctx.shutdown.load()) return std::nullopt;
     if (!pause_interruptible(cfg.silence_gap, ctx.shutdown)) return std::nullopt;
 
@@ -158,7 +158,7 @@ std::optional<CalibrationResult> run_calibration(
         ctx.visualizer->update_calibration("Phase 2: Keep eyes gently closed", 0, cfg.min_samples_per_window);
     }
 
-    ctx.audio.play_blocking(cfg.phase2_instructions_path);
+    ctx.audio.play_blocking(cfg.phase2_instructions_path, 6.0f);
     if (ctx.shutdown.load()) return std::nullopt;
     if (!pause_interruptible(cfg.silence_gap, ctx.shutdown)) return std::nullopt;
 

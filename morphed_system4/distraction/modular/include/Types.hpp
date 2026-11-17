@@ -147,7 +147,7 @@ struct LSTMInferenceConfig {
  */
 struct AuditoryAlertConfig {
     std::string distraction_sound_path{"input/sounds/distraction_warning.wav"};
-    float distraction_gain_db{0.0f};
+    float distraction_gain_db{6.0f};
 
     double drowsiness_repetition_rate_hz{63.5 / 60.0}; // 63.5 BPM (~1.058 Hz, ~944.9 ms interval)
     std::string drowsiness_sound_path{"input/sounds/single-beep-1850-Hz-975-Hz.wav"};
