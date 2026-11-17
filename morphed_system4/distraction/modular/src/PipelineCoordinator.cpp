@@ -286,6 +286,7 @@ void PipelineCoordinator::handle_console_command(ConsoleCommand cmd) {
                 case SystemState::MovingCalibrated:
                     system_state_.store(SystemState::StationaryCalibrated);
                     alert_manager_.reset();
+                    ear_detector_.clear_perclos();
                     gaze_reset_requested_.store(true, std::memory_order_release);
                     debug_visualizer_.reset();
 #ifdef DEBUG_VIEWS
@@ -413,6 +414,7 @@ void PipelineCoordinator::somnolence_worker_loop() {
     try {
         cv::Mat frame;
         bool was_calibrated = false;
+        bool was_moving_calibrated = false;
         auto last_face_probe_time = std::chrono::steady_clock::now() - std::chrono::seconds(10);
 
         somno_work_ms_.reserve(18000);
@@ -456,9 +458,13 @@ void PipelineCoordinator::somnolence_worker_loop() {
                 continue;
             }
 
-            // Skip all somnolence detections unless moving and calibrated
-            if (system_state_.load() != SystemState::MovingCalibrated) {
-                continue;
+            const bool is_moving_calibrated = (system_state_.load() == SystemState::MovingCalibrated);
+            if (is_moving_calibrated) {
+                was_moving_calibrated = true;
+            } else if (was_moving_calibrated) {
+                alert_manager_.reset();
+                ear_detector_.clear_perclos();
+                was_moving_calibrated = false;
             }
 
             const auto t_work_start = std::chrono::steady_clock::now();
@@ -481,20 +487,28 @@ void PipelineCoordinator::somnolence_worker_loop() {
             if (landmarks_opt.has_value()) {
                 const auto& landmarks = landmarks_opt.value();
 
-                // Evaluate mouth aspect ratio (MAR) and yawn duration first
+                // Evaluate mouth aspect ratio (MAR) and leaky yawn accumulator first
                 mar_res = mar_detector_.process(landmarks, t_work_start);
 
                 const double yawn_suppress_sec = std::chrono::duration<double>(
                     mar_detector_.config().time_for_ear_suppresion_by_yawn
                 ).count();
-                const bool suppress_eye_closure = (mar_res.yawn_duration_sec >= yawn_suppress_sec);
+                const bool suppress_by_yawn = (mar_res.yawn_duration_sec >= yawn_suppress_sec);
 
-                ear_res = ear_detector_.process(landmarks, t_work_start, suppress_eye_closure);
-                head_res = head_detector_.process(landmarks, t_work_start);
+                ear_res = ear_detector_.process(landmarks, t_work_start, suppress_by_yawn, is_moving_calibrated);
+                head_res = head_detector_.process(landmarks, t_work_start, suppress_by_yawn);
 
-                alert_manager_.update_somnolence(ear_res, head_res, mar_res);
+                if (is_moving_calibrated) {
+                    alert_manager_.update_somnolence(ear_res, head_res, mar_res);
+                }
             } else {
-                alert_manager_.tick_drowsiness_if_active();
+                mar_res = mar_detector_.on_face_lost(t_work_start);
+                ear_res = ear_detector_.on_face_lost(t_work_start);
+                head_res = head_detector_.on_face_lost(t_work_start);
+
+                if (is_moving_calibrated) {
+                    alert_manager_.tick_drowsiness_if_active();
+                }
             }
 
             const auto t_end = std::chrono::steady_clock::now();
@@ -504,6 +518,7 @@ void PipelineCoordinator::somnolence_worker_loop() {
                 ear_res,
                 ear_detector_.thresh_descent(),
                 ear_detector_.thresh_closure(),
+                ear_detector_.config().perclos_high_thresh,
                 head_res,
                 mar_res,
                 mar_detector_.config().mar_threshold,

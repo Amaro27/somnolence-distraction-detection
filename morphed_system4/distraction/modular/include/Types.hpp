@@ -112,6 +112,8 @@ struct EarAssessment {
     double ear_median{0.0};
     double ear_mov_avg{0.0};
     double perclos_pct{0.0};
+    bool perclos_warmed_up{false};
+    double perclos_warmup_remaining_sec{0.0};
     double last_blink_duration_ms{0.0};
     bool in_blink_cycle{false};
     std::vector<CueEvent> cues;

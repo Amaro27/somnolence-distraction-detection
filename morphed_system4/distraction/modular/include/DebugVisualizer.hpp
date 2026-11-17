@@ -42,6 +42,7 @@ public:
         const EarAssessment& ear,
         double thresh_descent,
         double thresh_closure,
+        double perclos_thresh,
         const HeadOrientationAssessment& head,
         const MarAssessment& mar,
         double mar_thresh,
@@ -80,6 +81,7 @@ private:
         EarAssessment ear;
         double ear_thresh_descent{0.25};
         double ear_thresh_closure{0.18};
+        double perclos_high_thresh{15.0};
         HeadOrientationAssessment head;
         MarAssessment mar;
         double mar_thresh{0.55};
@@ -125,6 +127,7 @@ public:
     void update_somnolence(
         const std::optional<FacialLandmarks68>&,
         const EarAssessment&,
+        double,
         double,
         double,
         const HeadOrientationAssessment&,

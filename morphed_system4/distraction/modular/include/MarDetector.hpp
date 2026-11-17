@@ -33,12 +33,25 @@ public:
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
     );
 
+    /**
+     * @brief Updates yawn accumulator during missing-face frames (holds state across brief
+     * face dropouts up to 1.5s before decaying, preventing false resets during deep yawns).
+     */
+    MarAssessment on_face_lost(
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+    );
+
     const MarConfig& config() const { return config_; }
 
 private:
     MarConfig config_;
     bool in_yawn_{false};
     bool yawn_cue_emitted_{false};
-    std::chrono::steady_clock::time_point yawn_start_;
+    double yawn_accum_sec_{0.0};
+    double closed_mouth_sec_{0.0};
+    double missing_face_sec_{0.0};
+    double last_mar_raw_{0.0};
+    bool has_last_time_{false};
+    std::chrono::steady_clock::time_point last_time_;
     std::chrono::steady_clock::time_point last_confirmed_yawn_;
 };

@@ -57,8 +57,19 @@ public:
     EarAssessment process(
         const FacialLandmarks68& landmarks,
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now(),
-        bool suppress_closure = false
+        bool suppress_closure = false,
+        bool record_perclos = true
     );
+
+    /**
+     * @brief Handles missing-face frames by clearing unconfirmed blink/micro-sleep closure streaks
+     * so a missing-face gap can never bridge into a false micro-sleep alarm.
+     */
+    EarAssessment on_face_lost(
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+    );
+
+    void clear_perclos() noexcept;
 
     bool is_calibrated() const { return calibrated_; }
     double thresh_descent() const noexcept { return thresh_descent_; }
@@ -84,8 +95,10 @@ private:
     // Blink duration & micro-sleep tracking state
     bool in_blink_cycle_{false};
     bool reached_effective_closure_{false};
-    std::chrono::steady_clock::time_point t_start_closure_;
-    std::chrono::steady_clock::time_point t_last_closed_;
+    double closure_accum_sec_{0.0};
+    double last_ear_raw_{0.0};
+    bool has_last_time_{false};
+    std::chrono::steady_clock::time_point last_time_;
     double last_blink_duration_ms_{0.0};
     bool microsleep_alarm_active_{false};
     std::chrono::steady_clock::time_point last_microsleep_cue_time_;
@@ -93,6 +106,7 @@ private:
     // Rolling 30-second PERCLOS tracking state
     std::deque<std::pair<std::chrono::steady_clock::time_point, int>> perclos_buffer_;
     size_t closed_samples_count_{0};
+    bool has_perclos_start_{false};
     std::chrono::steady_clock::time_point perclos_start_time_;
     std::chrono::steady_clock::time_point last_perclos_cue_time_;
     double perclos_pct_{0.0};

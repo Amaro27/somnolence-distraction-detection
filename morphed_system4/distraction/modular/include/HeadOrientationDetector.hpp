@@ -40,6 +40,15 @@ public:
      */
     HeadOrientationAssessment process(
         const FacialLandmarks68& landmarks,
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now(),
+        bool suppress_droop = false
+    );
+
+    /**
+     * @brief Updates droop accumulator during missing-face frames (decays gradually instead
+     * of counting unobserved gaps or snapping to zero).
+     */
+    HeadOrientationAssessment on_face_lost(
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
     );
 
@@ -55,5 +64,9 @@ private:
     // Time-based droop detection state (1.5 seconds)
     bool in_droop_{false};
     bool droop_cue_emitted_{false};
-    std::chrono::steady_clock::time_point droop_start_time_;
+    double droop_accum_sec_{0.0};
+    double last_pitch_deg_{0.0};
+    double last_rho_{0.0};
+    bool has_last_time_{false};
+    std::chrono::steady_clock::time_point last_time_;
 };

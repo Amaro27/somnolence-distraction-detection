@@ -108,6 +108,7 @@ void DebugVisualizer::update_somnolence(
     const EarAssessment& ear,
     double thresh_descent,
     double thresh_closure,
+    double perclos_thresh,
     const HeadOrientationAssessment& head,
     const MarAssessment& mar,
     double mar_thresh,
@@ -121,6 +122,7 @@ void DebugVisualizer::update_somnolence(
     snapshot_.ear = ear;
     snapshot_.ear_thresh_descent = thresh_descent;
     snapshot_.ear_thresh_closure = thresh_closure;
+    snapshot_.perclos_high_thresh = perclos_thresh;
     snapshot_.head = head;
     snapshot_.mar = mar;
     snapshot_.mar_thresh = mar_thresh;
@@ -195,12 +197,12 @@ ConsoleCommand DebugVisualizer::render_step(SystemState sys_state, DriverState d
 
         // Right Eye (36..41) & Left Eye (42..47) in cyan
         const cv::Scalar cyan(255, 255, 0);
-        draw_landmark_loop(canvas, lm, FaceGeometry::Index::RIGHT_EYE_P1, FaceGeometry::Index::RIGHT_EYE_P6, cyan, true);
-        draw_landmark_loop(canvas, lm, FaceGeometry::Index::LEFT_EYE_P1, FaceGeometry::Index::LEFT_EYE_P6, cyan, true);
+        // draw_landmark_loop(canvas, lm, FaceGeometry::Index::RIGHT_EYE_P1, FaceGeometry::Index::RIGHT_EYE_P6, cyan, true);
+        // draw_landmark_loop(canvas, lm, FaceGeometry::Index::LEFT_EYE_P1, FaceGeometry::Index::LEFT_EYE_P6, cyan, true);
 
         // Outer Lip (48..59) in orange-yellow & Inner Lip (60..67) in bright yellow
-        draw_landmark_loop(canvas, lm, 48, 59, cv::Scalar(0, 180, 255), false);
-        draw_landmark_loop(canvas, lm, FaceGeometry::Index::INNER_LIP_CORNER_LEFT, FaceGeometry::Index::INNER_LIP_BOT_LEFT, cv::Scalar(0, 255, 255), true);
+        // draw_landmark_loop(canvas, lm, 48, 59, cv::Scalar(0, 180, 255), false);
+        // draw_landmark_loop(canvas, lm, FaceGeometry::Index::INNER_LIP_CORNER_LEFT, FaceGeometry::Index::INNER_LIP_BOT_LEFT, cv::Scalar(0, 255, 255), true);
 
         // Head Pitch reference landmarks (36, 45, 33, 8) in magenta
         const cv::Scalar magenta(255, 0, 255);
@@ -211,14 +213,7 @@ ConsoleCommand DebugVisualizer::render_step(SystemState sys_state, DriverState d
             FaceGeometry::Index::CHIN
         };
         for (size_t idx : pitch_refs) {
-            cv::circle(
-                canvas,
-                cv::Point(static_cast<int>(std::lround(lm[idx].x)), static_cast<int>(std::lround(lm[idx].y))),
-                3,
-                magenta,
-                -1,
-                cv::LINE_AA
-            );
+            // cv::circle(canvas, cv::Point(static_cast<int>(std::lround(lm[idx].x)), static_cast<int>(std::lround(lm[idx].y))), 3, magenta, -1, cv::LINE_AA);
         }
 
         // 2D Roll-Invariant Facial Coordinate Axes
@@ -246,9 +241,9 @@ ConsoleCommand DebugVisualizer::render_step(SystemState sys_state, DriverState d
             static_cast<int>(std::lround(e_mid.y + u_y.y * (axis_len * 0.75)))
         );
 
-        cv::arrowedLine(canvas, origin, pt_x, cyan, 2, cv::LINE_AA, 0, 0.2);
+        // cv::arrowedLine(canvas, origin, pt_x, cyan, 2, cv::LINE_AA, 0, 0.2);
         const cv::Scalar pitch_axis_color = snap.head.is_drooping ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0);
-        cv::arrowedLine(canvas, origin, pt_y, pitch_axis_color, 2, cv::LINE_AA, 0, 0.2);
+        // cv::arrowedLine(canvas, origin, pt_y, pitch_axis_color, 2, cv::LINE_AA, 0, 0.2);
 
         // Tight face bounding box padded by 12px
         float min_x = lm[0].x, max_x = lm[0].x;
@@ -281,7 +276,8 @@ ConsoleCommand DebugVisualizer::render_step(SystemState sys_state, DriverState d
         if (snap.mar.is_yawning) {
             draw_tag("YAWNING", cv::Scalar(0, 255, 255));
         }
-        if (snap.ear.perclos_pct >= 15.0) {
+        if (snap.calibrated && sys_state == SystemState::MovingCalibrated &&
+            snap.ear.perclos_warmed_up && snap.ear.perclos_pct >= snap.perclos_high_thresh) {
             draw_tag("HIGH PERCLOS", cv::Scalar(0, 0, 255));
         }
     }
@@ -420,16 +416,63 @@ ConsoleCommand DebugVisualizer::render_step(SystemState sys_state, DriverState d
         cv::putText(canvas, line_buf, cv::Point(20, y_cursor), cv::FONT_HERSHEY_SIMPLEX, 0.43, cv::Scalar(255, 255, 200), 1, cv::LINE_AA);
         y_cursor += 20;
 
-        std::snprintf(
-            line_buf,
-            sizeof(line_buf),
-            "PERCLOS (30s): %.1f%% | MAR: %.2f (Thresh: %.2f) | Yawn: %.1fs",
-            snap.ear.perclos_pct,
-            snap.mar.mar_raw,
-            snap.mar_thresh,
-            snap.mar.yawn_duration_sec
-        );
-        cv::putText(canvas, line_buf, cv::Point(20, y_cursor), cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(200, 230, 255), 1, cv::LINE_AA);
+        cv::Scalar perclos_color = cv::Scalar(200, 230, 255);
+        if (!snap.calibrated) {
+            std::snprintf(
+                line_buf,
+                sizeof(line_buf),
+                "PERCLOS (30s): -- (Uncalibrated) | MAR: %.2f (Thresh: %.2f) | Yawn: %.1fs",
+                snap.mar.mar_raw,
+                snap.mar_thresh,
+                snap.mar.yawn_duration_sec
+            );
+            perclos_color = cv::Scalar(160, 160, 160);
+        } else if (sys_state != SystemState::MovingCalibrated) {
+            std::snprintf(
+                line_buf,
+                sizeof(line_buf),
+                "PERCLOS (30s): -- (Stopped) | MAR: %.2f (Thresh: %.2f) | Yawn: %.1fs",
+                snap.mar.mar_raw,
+                snap.mar_thresh,
+                snap.mar.yawn_duration_sec
+            );
+            perclos_color = cv::Scalar(160, 160, 160);
+        } else if (!snap.ear.perclos_warmed_up) {
+            std::snprintf(
+                line_buf,
+                sizeof(line_buf),
+                "PERCLOS (30s): %.1f%% [Warmup: %.0fs] | MAR: %.2f (Thresh: %.2f) | Yawn: %.1fs",
+                snap.ear.perclos_pct,
+                snap.ear.perclos_warmup_remaining_sec,
+                snap.mar.mar_raw,
+                snap.mar_thresh,
+                snap.mar.yawn_duration_sec
+            );
+            perclos_color = cv::Scalar(200, 230, 255);
+        } else if (snap.ear.perclos_pct >= snap.perclos_high_thresh) {
+            std::snprintf(
+                line_buf,
+                sizeof(line_buf),
+                "PERCLOS (30s): %.1f%% [FATIGUE >=%.0f%%] | MAR: %.2f | Yawn: %.1fs",
+                snap.ear.perclos_pct,
+                snap.perclos_high_thresh,
+                snap.mar.mar_raw,
+                snap.mar.yawn_duration_sec
+            );
+            perclos_color = cv::Scalar(0, 0, 255);
+        } else {
+            std::snprintf(
+                line_buf,
+                sizeof(line_buf),
+                "PERCLOS (30s): %.1f%% | MAR: %.2f (Thresh: %.2f) | Yawn: %.1fs",
+                snap.ear.perclos_pct,
+                snap.mar.mar_raw,
+                snap.mar_thresh,
+                snap.mar.yawn_duration_sec
+            );
+            perclos_color = cv::Scalar(200, 230, 255);
+        }
+        cv::putText(canvas, line_buf, cv::Point(20, y_cursor), cv::FONT_HERSHEY_SIMPLEX, 0.44, perclos_color, 1, cv::LINE_AA);
         y_cursor += 20;
 
         const char* face_str = !snap.has_somno ? "IDLE" : (snap.face_missing ? "MISSING" : "TRACKING");
