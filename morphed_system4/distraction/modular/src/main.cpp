@@ -1,4 +1,5 @@
 #include "PipelineCoordinator.hpp"
+#include "TelegramNotifier.hpp"
 #include "Types.hpp"
 
 #include <atomic>
@@ -34,6 +35,11 @@ void print_help() {
 } // namespace
 
 int main(int argc, char** argv) {
+    struct TelegramLifecycle {
+        TelegramLifecycle() { telegram_init(); }
+        ~TelegramLifecycle() { telegram_cleanup(); }
+    } tg_lifecycle;
+
     PipelineCoordinator::Options options;
 
     // Parse command line arguments

@@ -39,6 +39,7 @@ else()
     find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio dnn)
 endif()
 find_package(dlib REQUIRED)
+find_package(CURL REQUIRED)
 
 set(MODULAR_DISTRACTION_SOURCES
     src/CameraCapture.cpp
@@ -57,6 +58,7 @@ set(MODULAR_DISTRACTION_SOURCES
     src/Calibration.cpp
     src/SoundPlayer.cpp
     src/PipelineCoordinator.cpp
+    src/TelegramNotifier.cpp
     src/main.cpp
 )
 
@@ -75,6 +77,7 @@ target_link_libraries(modular_distraction PRIVATE
     ${OpenCV_LIBS}
     dlib::dlib
     Threads::Threads
+    CURL::libcurl
 )
 
 if(WIN32)

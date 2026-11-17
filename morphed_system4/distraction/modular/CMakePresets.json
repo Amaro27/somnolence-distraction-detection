@@ -10,6 +10,7 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+                "CMAKE_PREFIX_PATH": "C:/msys64/ucrt64",
                 "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
                 "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe"
             }
@@ -23,6 +24,7 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+                "CMAKE_PREFIX_PATH": "C:/msys64/ucrt64",
                 "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
                 "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe"
             }

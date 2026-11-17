@@ -1,9 +1,11 @@
 #include "AlertManager.hpp"
 #include "AlertLogic.hpp"
+#include "TelegramNotifier.hpp"
 
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -165,6 +167,11 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
                   << "        Avg Looking Probability: " << std::fixed << std::setprecision(1)
                   << (assessment.avg_looking_prob * 100.0f) << "%\n";
 #endif
+        // Dispatch Telegram alert asynchronously without blocking frame processing
+        std::thread([]() {
+            send_telegram_alert("⚠️ Distraction Alert: Driver looking away from road!");
+        }).detach();
+
         log_auditory_alert(config_.audio_config.distraction_gain_db, "Driver looking away from road");
         audio_.play_blocking(
             config_.audio_config.distraction_sound_path,
@@ -247,6 +254,11 @@ void AlertManager::register_cue(CueType type, CueStrength strength, const std::s
     const std::string reason = log_somnolence_triggers_and_reason(
         strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot
     );
+    if (!strong_cues_triggered.empty() || trigger_high_alert) {
+        std::thread([alert_text = "⚠️ Somnolence Alert: " + reason]() {
+            send_telegram_alert(alert_text);
+        }).detach();
+    }
     if (emit_audio) {
         dispatch_auditory_alert(config_.audio_config.drowsiness_sound_path, gain_db, reason);
     }
@@ -309,8 +321,15 @@ void AlertManager::update_somnolence(
         std::cout << "\n[INFO] Drowsiness alert cleared: Driver physiological features returned to normal.\n";
 #endif
         audio_.stop();
-    } else if (emit_audio) {
-        dispatch_auditory_alert(config_.audio_config.drowsiness_sound_path, gain_db, reason);
+    } else {
+        if (!strong_cues_triggered.empty() || trigger_high_alert) {
+            std::thread([alert_text = "⚠️ Somnolence Alert: " + reason]() {
+                send_telegram_alert(alert_text);
+            }).detach();
+        }
+        if (emit_audio) {
+            dispatch_auditory_alert(config_.audio_config.drowsiness_sound_path, gain_db, reason);
+        }
     }
 }
 
