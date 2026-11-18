@@ -853,6 +853,181 @@ def graficar_serie_temporal(df_sim, ruta, ventana=600):
     plt.close(fig)
 
 
+def extraer_clips_parpadeos(df_sim, df_eventos, dir_salida, modelo_path, n_clips=15, fps=FPS_DMD):
+    """Extrae clips de video (.avi a 30 fps) de los parpadeos con mayor error de duración
+    (sobreestimados y subestimados) y de parpadeos bien ajustados, dibujando en cada frame:
+      - La caja del rostro y los puntos faciales de dlib (destacando en rojo los 12 puntos de los ojos).
+      - Un recorte ampliado (zoom 2.5x) de la región de los ojos en la esquina superior derecha.
+      - El estado real del dataset (open / closing / close / opening) vs la predicción del algoritmo.
+      - Los valores instantáneos de EAR, EAR base abierto y Umbral de cierre (20%).
+      - Una gráfica temporal inferior con la curva de EAR, el umbral y un cursor en el frame actual.
+    """
+    vp = df_eventos[df_eventos["Tipo"] == "Verdadero Positivo"].copy()
+    if vp.empty or n_clips <= 0:
+        return
+
+    _init_worker(modelo_path)
+    out_dir = Path(dir_salida) / "clips_parpadeos"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old_avi in out_dir.glob("*.avi"):
+        try:
+            old_avi.unlink()
+        except OSError:
+            pass
+
+    vp["Diff_ms"] = vp["Pred_Duracion_ms"] - vp["GT_Duracion_ms"]
+    n_sobre = max(1, n_clips // 2)
+    n_sub = max(1, n_clips - n_sobre)
+    top_sobre = vp[vp["Diff_ms"] > 0].sort_values("Error_Duracion_ms", ascending=False).head(n_sobre)
+    top_sub = vp[vp["Diff_ms"] < 0].sort_values("Error_Duracion_ms", ascending=False).head(n_sub)
+    seleccion = pd.concat([top_sobre, top_sub]).drop_duplicates(subset=["Grabacion", "GT_ID"])
+
+    colores_clase = {
+        "open": (60, 180, 60),       # Verde
+        "closing": (0, 165, 255),    # Naranja
+        "opening": (0, 200, 255),    # Amarillo-Naranja
+        "close": (40, 40, 230),      # Rojo
+    }
+
+    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+    alto_panel_inf = 90
+    ancho_vid, alto_vid = ANCHO_16_9, ALTO_16_9 + alto_panel_inf
+
+    print(f"\nExtrayendo {len(seleccion)} clips de video (.avi) con landmarks de dlib y curva de EAR...")
+    for _, row in seleccion.iterrows():
+        g = row["Grabacion"]
+        gt_id = int(row["GT_ID"])
+        gt_ini, gt_fin = int(row["GT_Frame_Inicio"]), int(row["GT_Frame_Fin"])
+        pr_ini, pr_fin = int(row["Pred_Frame_Inicio"]), int(row["Pred_Frame_Fin"])
+        gt_ms, pr_ms = float(row["GT_Duracion_ms"]), float(row["Pred_Duracion_ms"])
+        diff_ms = pr_ms - gt_ms
+        err_ms = float(row["Error_Duracion_ms"])
+
+        sub_g = df_sim[df_sim["grabacion"] == g].sort_values("frame").reset_index(drop=True)
+        f_min_clip = max(int(sub_g["frame"].min()), min(gt_ini, pr_ini) - 20)
+        f_max_clip = min(int(sub_g["frame"].max()), max(gt_fin, pr_fin) + 20)
+        sub_clip = sub_g[(sub_g["frame"] >= f_min_clip) & (sub_g["frame"] <= f_max_clip)].reset_index(drop=True)
+        if sub_clip.empty:
+            continue
+
+        tipo_err = "SOBREESTIMADO" if diff_ms >= 0 else "SUBESTIMADO"
+        nombre_avi = (f"{tipo_err}_Err_{int(round(err_ms)):04d}ms_GT{gt_id:03d}_"
+                      f"{g.replace(';', '-')}_f{gt_ini}-{gt_fin}.avi")
+        ruta_avi = out_dir / nombre_avi
+        writer = cv2.VideoWriter(str(ruta_avi), fourcc, fps, (ancho_vid, alto_vid))
+
+        frames_arr = sub_clip["frame"].to_numpy()
+        ears_arr = sub_clip["ear_eval"].to_numpy()
+        thrs_arr = sub_clip["umbral"].to_numpy()
+        clases_arr = sub_clip["clase"].to_numpy()
+        ear_min_plot = max(0.05, float(np.nanmin(ears_arr)) - 0.04)
+        ear_max_plot = min(0.50, float(np.nanmax(ears_arr)) + 0.05)
+        if ear_max_plot <= ear_min_plot + 0.05:
+            ear_max_plot = ear_min_plot + 0.15
+
+        for k, r_f in sub_clip.iterrows():
+            img = _leer_imagen(r_f["ruta"])
+            if img is None:
+                continue
+            vis = cv2.resize(img, (ANCHO_16_9, ALTO_16_9), interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(vis, cv2.COLOR_BGR2GRAY)
+
+            # Dibujar caja de dlib, puntos de los ojos y recorte con zoom de los ojos
+            if not np.isnan(r_f["x1"]):
+                rect = dlib.rectangle(int(r_f["x1"]), int(r_f["y1"]), int(r_f["x2"]), int(r_f["y2"]))
+                shrink = 0.88
+                cx = (rect.left() + rect.right()) / 2.0
+                cy = (rect.top() + rect.bottom()) / 2.0 - (1.0 - shrink) * 0.30 * rect.height()
+                w, h = rect.width() * shrink, rect.height() * shrink
+                r_adj = dlib.rectangle(int(round(cx - w / 2.0)), int(round(cy - h / 2.0)),
+                                       int(round(cx + w / 2.0)), int(round(cy + h / 2.0)))
+                _, _, _, pts = _ear_desde_caja(gray, rect)
+
+                # Zoom de la región de los ojos antes de dibujar sobre vis
+                ex1 = max(0, int(np.min(pts[36:48, 0])) - 18)
+                ex2 = min(ANCHO_16_9, int(np.max(pts[36:48, 0])) + 18)
+                ey1 = max(0, int(np.min(pts[36:48, 1])) - 14)
+                ey2 = min(ALTO_16_9, int(np.max(pts[36:48, 1])) + 14)
+
+                cv2.rectangle(vis, (r_adj.left(), r_adj.top()), (r_adj.right(), r_adj.bottom()), (255, 140, 0), 1)
+                for i_pt in range(36, 48):
+                    px, py = int(round(pts[i_pt, 0])), int(round(pts[i_pt, 1]))
+                    cv2.circle(vis, (px, py), 2, (0, 0, 255), -1)
+                cv2.polylines(vis, [pts[36:42].astype(int)], True, (0, 255, 255), 1)
+                cv2.polylines(vis, [pts[42:48].astype(int)], True, (0, 255, 255), 1)
+
+                if ex2 > ex1 + 10 and ey2 > ey1 + 6:
+                    zoom = cv2.resize(vis[ey1:ey2, ex1:ex2], (190, 75), interpolation=cv2.INTER_NEAREST)
+                    cv2.rectangle(zoom, (0, 0), (189, 74), (255, 255, 255), 1)
+                    vis[8:83, ANCHO_16_9 - 198:ANCHO_16_9 - 8] = zoom
+
+            f_cur = int(r_f["frame"])
+            c_cur = str(r_f["clase"])
+            ear_cur = float(r_f["ear_eval"])
+            thr_cur = float(r_f["umbral"])
+            pred_cur = int(r_f["pred"])
+            en_pred_span = (pr_ini <= f_cur <= pr_fin)
+
+            # Panel superior de telemetría
+            cv2.rectangle(vis, (0, 0), (ANCHO_16_9 - 205, 86), (20, 20, 20), -1)
+            cv2.putText(vis, f"{g} | Frame: {f_cur}", (8, 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (220, 220, 220), 1)
+            cv2.putText(vis, f"GT carpeta: {c_cur.upper()}", (8, 38),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, colores_clase.get(c_cur, (255, 255, 255)), 2)
+            txt_p = "CERRADO (<=20%)" if pred_cur == 1 else ("EN EVENTO" if en_pred_span else "ABIERTO")
+            col_p = (50, 50, 255) if pred_cur == 1 else ((0, 165, 255) if en_pred_span else (80, 220, 80))
+            cv2.putText(vis, f"Pred: {txt_p}", (215, 38),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, col_p, 2)
+            cv2.putText(vis, f"EAR: {ear_cur:.3f} | Umbral(20%): {thr_cur:.3f} | Abierto: {r_f['ear_abierto_ref']:.3f}",
+                        (8, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+            cv2.putText(vis, f"GT 'close': {gt_ms:.0f}ms ({gt_ini}-{gt_fin}) | Pred: {pr_ms:.0f}ms ({pr_ini}-{pr_fin}) | Diff: {diff_ms:+.0f}ms",
+                        (8, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1)
+
+            # Panel inferior con la serie temporal del EAR durante el clip
+            panel = np.full((alto_panel_inf, ANCHO_16_9, 3), 25, dtype=np.uint8)
+            m_izq, m_der = 40, ANCHO_16_9 - 15
+            m_top, m_bot = 12, alto_panel_inf - 18
+            n_f = max(1, len(frames_arr) - 1)
+
+            def fx_pos(idx_k):
+                return int(round(m_izq + (idx_k / n_f) * (m_der - m_izq)))
+
+            def fy_pos(val_e):
+                t = (val_e - ear_min_plot) / (ear_max_plot - ear_min_plot)
+                t = float(np.clip(t, 0.0, 1.0))
+                return int(round(m_bot - t * (m_bot - m_top)))
+
+            # Sombrear fondo según la carpeta GT de cada fotograma
+            for idx_k in range(len(frames_arr)):
+                x_a = fx_pos(idx_k)
+                x_b = fx_pos(min(len(frames_arr) - 1, idx_k + 1))
+                c_k = clases_arr[idx_k]
+                if c_k == "close":
+                    cv2.rectangle(panel, (x_a, m_top), (max(x_a + 1, x_b), m_bot), (35, 35, 110), -1)
+                elif c_k in ("closing", "opening"):
+                    cv2.rectangle(panel, (x_a, m_top), (max(x_a + 1, x_b), m_bot), (25, 70, 95), -1)
+
+            # Curva de umbral (amarillo) y curva de EAR (cyan)
+            pts_thr = np.array([[fx_pos(i), fy_pos(thrs_arr[i])] for i in range(len(frames_arr))], dtype=int)
+            pts_ear = np.array([[fx_pos(i), fy_pos(ears_arr[i])] for i in range(len(frames_arr))], dtype=int)
+            cv2.polylines(panel, [pts_thr], False, (0, 200, 255), 1)
+            cv2.polylines(panel, [pts_ear], False, (255, 220, 0), 2)
+
+            # Cursor del fotograma actual
+            xk = fx_pos(k)
+            cv2.line(panel, (xk, 4), (xk, alto_panel_inf - 4), (255, 255, 255), 1)
+            cv2.circle(panel, (xk, fy_pos(ear_cur)), 3, (0, 0, 255) if pred_cur == 1 else (0, 255, 0), -1)
+            cv2.putText(panel, "Fondo Rojo=close | Naranja=closing/opening | Linea Azul=EAR | Amarilla=Umbral 20%",
+                        (m_izq, alto_panel_inf - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+
+            frame_out = np.vstack([vis, panel])
+            writer.write(frame_out)
+
+        writer.release()
+        print(f"  Guardado: {nombre_avi}")
+    print(f"Clips de parpadeos exportados en: {out_dir}")
+
+
 # ---------------------------------------------------------
 # Ejecución Principal
 # ---------------------------------------------------------
@@ -871,6 +1046,8 @@ def main():
                     help="0.80 -> umbral al 20%% inferior del rango de apertura")
     ap.add_argument("--umbral-ms", type=float, default=500.0,
                     help="Umbral de duración mínima de interés en ms (por defecto 500 ms, como en AF_test.py)")
+    ap.add_argument("--clips-error", type=int, default=16,
+                    help="Cantidad de clips .avi de parpadeos con mayor error de duración a extraer (0 = ninguno)")
     ap.add_argument("--recalcular", action="store_true", help="Re-extraer EAR ignorando la caché")
     args = ap.parse_args()
 
@@ -973,6 +1150,8 @@ def main():
     graficar_deteccion_por_duracion(df_umbrales, salida / "deteccion_por_duracion_ms.png")
     graficar_dispersion_duraciones(df_gt_info, args.umbral_ms, salida / "dispersion_duraciones_ms.png")
     graficar_serie_temporal(df_main, salida / "serie_temporal_ejemplo.png")
+    if args.clips_error > 0:
+        extraer_clips_parpadeos(df_main, df_eventos, salida, args.modelo, args.clips_error, FPS_DMD)
 
     print(f"\nArchivos exportados en: {salida}")
     print("  - metricas_por_duracion_ms.csv      (tabla de detección desde n ms en adelante)")
