@@ -518,53 +518,127 @@ def simular_y_extraer_eventos(df, refs, modo_calibracion, modo_filtro,
 # ---------------------------------------------------------
 # Etapa 3: Emparejamiento de Eventos y Evaluación por Duración (>= n ms)
 # ---------------------------------------------------------
-def emparejar_eventos_eb8(gt_blinks, pred_blinks, iou_threshold=IOU_THRESHOLD):
-    """Empareja los eventos predichos con los eventos reales de `close` dentro de cada grabación
-    (al estilo de `AF_benchmark_EB8.py`) y devuelve:
-      - df_eventos: tabla detallada de cada evento (Verdadero Positivo, Falso Positivo, Falso Negativo)
-      - gt_info   : lista de diccionarios de cada GT con su estado de detección y predicción asociada
+def emparejar_eventos_eb8(gt_blinks, pred_blinks, iou_threshold=IOU_THRESHOLD, fps=FPS_DMD):
+    """Empareja los eventos predichos con los eventos reales de `close` dentro de cada grabación:
+      - Punto 2 (Consolidación de fragmentos): Si un mismo cierre real (GT) es solapado por 2 o más
+        sub-segmentos predichos (por temblor momentáneo del EAR en cierres largos), se consolidan
+        desde el primer fotograma cerrado (`frame_inicio_cierre`) hasta el último (`frame_fin_cierre`),
+        tal como `dur_f = frame_fin_cierre - frame_inicio_cierre + 1` en `AF_benchmark_EB8.py`.
+      - Punto 3 (Criterio estricto IoU >= 0.20): Se exige estrictamente `iou >= iou_threshold` (0.20),
+        sin aceptar emparejamientos con IoU bajo por cobertura.
     """
-    matched_gt = set()
     datos_exportacion = []
-    gt_match_map = {}
+    gt_info = []
+    preds_usados = set()
 
-    for pred_idx, pred in enumerate(pred_blinks):
-        g = pred["grabacion"]
-        p_set = set(range(pred["start"], pred["end"] + 1))
-        mejor_score = 0.0
-        mejor_iou = 0.0
-        mejor_gt_idx = -1
+    # Agrupar predicciones por grabación para búsqueda rápida
+    preds_por_grab = {}
+    for p_idx, p in enumerate(pred_blinks):
+        preds_por_grab.setdefault(p["grabacion"], []).append((p_idx, p))
 
-        for idx, gt in enumerate(gt_blinks):
-            if idx in matched_gt or gt["grabacion"] != g:
+    rec_id_counter = 1
+    for gt_idx, gt in enumerate(gt_blinks):
+        g = gt["grabacion"]
+        gt_set = set(range(gt["start"], gt["end"] + 1))
+        candidatos = preds_por_grab.get(g, [])
+
+        # Buscar todos los segmentos predichos no usados que se solapen con este evento GT
+        solapados = []
+        for p_idx, p in candidatos:
+            if p_idx in preds_usados:
                 continue
-            gt_set = set(range(gt["start"], gt["end"] + 1))
-            inter = len(p_set & gt_set)
-            if inter == 0:
+            p_set = set(range(p["start"], p["end"] + 1))
+            if len(gt_set & p_set) > 0:
+                solapados.append((p_idx, p, p_set))
+
+        if solapados:
+            # Consolidar fragmentos que caen en el mismo cierre real (inicio del primero al fin del último)
+            span_start = min(p["start"] for _, p, _ in solapados)
+            span_end = max(p["end"] for _, p, _ in solapados)
+            span_frames = span_end - span_start + 1
+            span_dur_ms = (span_frames / fps) * 1000.0
+            span_set = set(range(span_start, span_end + 1))
+
+            inter = len(gt_set & span_set)
+            union = len(gt_set | span_set)
+            iou = inter / union if union > 0 else 0.0
+
+            # Punto 3: Criterio estricto IoU >= 0.20 (idéntico a AF_benchmark_EB8.py)
+            if iou >= iou_threshold:
+                for p_idx, _, _ in solapados:
+                    preds_usados.add(p_idx)
+                err = abs(span_dur_ms - gt["duration_ms"])
+                datos_exportacion.append({
+                    "Grabacion": g,
+                    "Pred_ID": rec_id_counter,
+                    "Pred_Frame_Inicio": span_start,
+                    "Pred_Frame_Fin": span_end,
+                    "Pred_Frames": span_frames,
+                    "Pred_Duracion_ms": round(span_dur_ms, 2),
+                    "Fragmentos_Unidos": len(solapados),
+                    "Tipo": "Verdadero Positivo",
+                    "GT_ID": gt_idx + 1,
+                    "GT_Frame_Inicio": gt["start"],
+                    "GT_Frame_Fin": gt["end"],
+                    "GT_Frames": gt["frames"],
+                    "GT_Duracion_ms": round(gt["duration_ms"], 2),
+                    "Error_Duracion_ms": round(err, 2),
+                    "IoU": round(iou, 4),
+                    "En_Transicion_Sin_Close": False,
+                })
+                rec_id_counter += 1
+                gt_info.append({
+                    **gt,
+                    "gt_id": gt_idx + 1,
+                    "detectado": True,
+                    "pred_duration_ms": span_dur_ms,
+                    "error_ms": err,
+                    "iou": iou,
+                    "fragmentos_unidos": len(solapados),
+                })
                 continue
-            union = len(p_set | gt_set)
-            iou = inter / union
-            cobertura_gt = inter / len(gt_set)
-            # Criterio de emparejamiento: IoU >= 0.20 (EB8) o cubre >= 30% del evento real
-            score = max(iou, 0.8 * cobertura_gt)
-            if (iou >= iou_threshold or cobertura_gt >= 0.30) and score > mejor_score:
-                mejor_score = score
-                mejor_iou = iou
-                mejor_gt_idx = idx
 
-        # Verificar si se solapa con algún evento real de `close` (aunque ya haya sido emparejado)
-        solapa_algun_close = any(
-            gt["grabacion"] == g and len(p_set & set(range(gt["start"], gt["end"] + 1))) > 0
-            for gt in gt_blinks
-        )
-
-        registro = {
+        # Si no hubo predicción con IoU >= 0.20, es un Falso Negativo
+        gt_info.append({
+            **gt,
+            "gt_id": gt_idx + 1,
+            "detectado": False,
+            "pred_duration_ms": np.nan,
+            "error_ms": np.nan,
+            "iou": 0.0,
+            "fragmentos_unidos": 0,
+        })
+        datos_exportacion.append({
             "Grabacion": g,
-            "Pred_ID": pred_idx + 1,
+            "Pred_ID": None,
+            "Pred_Frame_Inicio": None,
+            "Pred_Frame_Fin": None,
+            "Pred_Frames": None,
+            "Pred_Duracion_ms": None,
+            "Fragmentos_Unidos": 0,
+            "Tipo": "Falso Negativo",
+            "GT_ID": gt_idx + 1,
+            "GT_Frame_Inicio": gt["start"],
+            "GT_Frame_Fin": gt["end"],
+            "GT_Frames": gt["frames"],
+            "GT_Duracion_ms": round(gt["duration_ms"], 2),
+            "Error_Duracion_ms": None,
+            "IoU": 0.0,
+            "En_Transicion_Sin_Close": False,
+        })
+
+    # Registrar las predicciones no emparejadas como Falsos Positivos
+    for p_idx, pred in enumerate(pred_blinks):
+        if p_idx in preds_usados:
+            continue
+        datos_exportacion.append({
+            "Grabacion": pred["grabacion"],
+            "Pred_ID": rec_id_counter,
             "Pred_Frame_Inicio": pred["start"],
             "Pred_Frame_Fin": pred["end"],
             "Pred_Frames": pred["frames"],
             "Pred_Duracion_ms": round(pred["duration_ms"], 2),
+            "Fragmentos_Unidos": 1,
             "Tipo": "Falso Positivo",
             "GT_ID": None,
             "GT_Frame_Inicio": None,
@@ -573,64 +647,9 @@ def emparejar_eventos_eb8(gt_blinks, pred_blinks, iou_threshold=IOU_THRESHOLD):
             "GT_Duracion_ms": None,
             "Error_Duracion_ms": None,
             "IoU": None,
-            "En_Transicion_Sin_Close": (not solapa_algun_close) and (pred.get("frac_open", 1.0) < 0.5),
-        }
-
-        if mejor_gt_idx >= 0:
-            matched_gt.add(mejor_gt_idx)
-            gt_blink = gt_blinks[mejor_gt_idx]
-            err = abs(pred["duration_ms"] - gt_blink["duration_ms"])
-            registro.update({
-                "Tipo": "Verdadero Positivo",
-                "GT_ID": mejor_gt_idx + 1,
-                "GT_Frame_Inicio": gt_blink["start"],
-                "GT_Frame_Fin": gt_blink["end"],
-                "GT_Frames": gt_blink["frames"],
-                "GT_Duracion_ms": round(gt_blink["duration_ms"], 2),
-                "Error_Duracion_ms": round(err, 2),
-                "IoU": round(mejor_iou, 4),
-            })
-            gt_match_map[mejor_gt_idx] = {
-                "pred_idx": pred_idx,
-                "pred_duration_ms": pred["duration_ms"],
-                "error_ms": err,
-                "iou": mejor_iou,
-            }
-        elif solapa_algun_close:
-            # Fragmento adicional dentro de un cierre real ya contabilizado
-            registro["Tipo"] = "Fragmento_Cierre_Real"
-
-        datos_exportacion.append(registro)
-
-    gt_info = []
-    for idx, gt in enumerate(gt_blinks):
-        m = gt_match_map.get(idx)
-        gt_info.append({
-            **gt,
-            "gt_id": idx + 1,
-            "detectado": m is not None,
-            "pred_duration_ms": m["pred_duration_ms"] if m else np.nan,
-            "error_ms": m["error_ms"] if m else np.nan,
-            "iou": m["iou"] if m else 0.0,
+            "En_Transicion_Sin_Close": pred.get("frac_open", 1.0) < 0.5,
         })
-        if m is None:
-            datos_exportacion.append({
-                "Grabacion": gt["grabacion"],
-                "Pred_ID": None,
-                "Pred_Frame_Inicio": None,
-                "Pred_Frame_Fin": None,
-                "Pred_Frames": None,
-                "Pred_Duracion_ms": None,
-                "Tipo": "Falso Negativo",
-                "GT_ID": idx + 1,
-                "GT_Frame_Inicio": gt["start"],
-                "GT_Frame_Fin": gt["end"],
-                "GT_Frames": gt["frames"],
-                "GT_Duracion_ms": round(gt["duration_ms"], 2),
-                "Error_Duracion_ms": None,
-                "IoU": 0.0,
-                "En_Transicion_Sin_Close": False,
-            })
+        rec_id_counter += 1
 
     return pd.DataFrame(datos_exportacion), pd.DataFrame(gt_info)
 
