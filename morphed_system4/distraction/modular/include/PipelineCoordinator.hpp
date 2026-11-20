@@ -38,6 +38,11 @@ public:
         size_t seq_len{20};
         ThresholdEvaluationPolicy policy{ThresholdEvaluationPolicy::BinarizeThreshold};
         bool start_moving{false};
+        bool use_imu{true};
+        std::string imu_bus{"/dev/i2c-1"};
+        uint8_t imu_address{0x68};
+        float imu_threshold_high{0.80f};
+        float imu_threshold_low{0.35f};
     };
 
     explicit PipelineCoordinator(Options options);
@@ -78,6 +83,7 @@ private:
     void handle_console_command(ConsoleCommand cmd);
     void gaze_worker_loop();
     void somnolence_worker_loop();
+    void imu_worker_loop();
 
     Options options_;
     LSTMInferenceConfig model_config_;
@@ -110,6 +116,8 @@ private:
     // Worker threads
     std::thread gaze_worker_;
     std::thread somnolence_worker_;
+    std::thread imu_worker_;
+    std::atomic<bool> vehicle_moving_{false};
 
     // Lightweight per-thread runtime timing samples (written by owning thread, read after join in stop())
     std::vector<double> gaze_work_ms_;

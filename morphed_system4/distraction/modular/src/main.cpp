@@ -29,6 +29,11 @@ void print_help() {
               << "  --seq-len <20>          LSTM sequence memory window in frames (default: 20)\n"
               << "  --policy <binarize|filter> Threshold policy (default: binarize)\n"
               << "  --moving                Start in moving state (default: stationary)\n"
+              << "  --no-imu                Disable hardware IMU (manual movement control with 'm')\n"
+              << "  --imu-bus <path>        I2C bus path for IMU (default: /dev/i2c-1)\n"
+              << "  --imu-addr <hex>        I2C address in hex (default: 0x68)\n"
+              << "  --imu-thresh-high <val> Acceleration threshold to declare moving (default: 0.80)\n"
+              << "  --imu-thresh-low <val>  Acceleration threshold to declare parked (default: 0.35)\n"
               << "  --help, -h              Display this help message\n";
 #endif
 }
@@ -68,6 +73,16 @@ int main(int argc, char** argv) {
             options.start_moving = true;
         } else if (arg == "--stationary") {
             options.start_moving = false;
+        } else if (arg == "--no-imu") {
+            options.use_imu = false;
+        } else if (arg == "--imu-bus" && i + 1 < argc) {
+            options.imu_bus = argv[++i];
+        } else if (arg == "--imu-addr" && i + 1 < argc) {
+            options.imu_address = static_cast<uint8_t>(std::stoul(argv[++i], nullptr, 16));
+        } else if (arg == "--imu-thresh-high" && i + 1 < argc) {
+            options.imu_threshold_high = std::stof(argv[++i]);
+        } else if (arg == "--imu-thresh-low" && i + 1 < argc) {
+            options.imu_threshold_low = std::stof(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             print_help();
             return 0;
