@@ -528,6 +528,158 @@ def extraer_clips_parpadeos_hd(df_sim, df_eventos, dir_salida, modelo_path, n_cl
     print(f"Clips HD exportados en: {out_dir}")
 
 
+def evaluar_eventos_riesgo_consecutivos(df_sim, gt_blinks, min_frames=15, fps=FPS_DMD):
+    """Evalúa estrictamente la detección de EVENTOS DE RIESGO (>= min_frames consecutivos sin
+    interrupción, es decir >= 500 ms a 30 fps), alineado con la alarma de AF_test.py:
+      - Eventos GT de riesgo: cierres `close` en el JSON con duración >= min_frames (200 eventos).
+      - Eventos Predichos de riesgo: rachas de >= min_frames CONSECUTIVOS con `pred == 1`.
+      - Calcula TP, FP, FN, Recall, Precisión, F1-Score a nivel de evento y también
+        Especificidad / Recall / F1 a nivel de fotograma de alerta activa.
+    """
+    gt_risk = [g for g in gt_blinks if g["frames"] >= min_frames]
+    gt_short = [g for g in gt_blinks if g["frames"] < min_frames]
+
+    pred_risk = []
+    for g, sub in df_sim.groupby("grabacion", sort=False):
+        frames = sub["frame"].to_numpy().astype(int)
+        preds = sub["pred"].to_numpy().astype(int)
+        clases = sub["clase"].to_numpy()
+        f_to_c = dict(zip(frames, clases))
+
+        run = []
+        for f_idx, p_val in zip(frames, preds):
+            if p_val == 1:
+                if run and f_idx != run[-1] + 1:
+                    if len(run) >= min_frames:
+                        cs = [f_to_c.get(f, "open") for f in run]
+                        pred_risk.append({
+                            "grabacion": g, "start": run[0], "end": run[-1],
+                            "frames": len(run), "duration_ms": (len(run) / fps) * 1000.0,
+                            "frac_open": sum(1 for c in cs if c == "open") / len(cs),
+                        })
+                    run = [f_idx]
+                else:
+                    run.append(f_idx)
+            else:
+                if run:
+                    if len(run) >= min_frames:
+                        cs = [f_to_c.get(f, "open") for f in run]
+                        pred_risk.append({
+                            "grabacion": g, "start": run[0], "end": run[-1],
+                            "frames": len(run), "duration_ms": (len(run) / fps) * 1000.0,
+                            "frac_open": sum(1 for c in cs if c == "open") / len(cs),
+                        })
+                    run = []
+        if run and len(run) >= min_frames:
+            cs = [f_to_c.get(f, "open") for f in run]
+            pred_risk.append({
+                "grabacion": g, "start": run[0], "end": run[-1],
+                "frames": len(run), "duration_ms": (len(run) / fps) * 1000.0,
+                "frac_open": sum(1 for c in cs if c == "open") / len(cs),
+            })
+
+    # Emparejamiento 1-a-1 evento a evento (IoU >= 0.20)
+    matched_gt = set()
+    tp = 0
+    fp_total = 0
+    fp_open = 0
+    fp_transicion = 0
+    fp_cierre_corto = 0
+
+    for p in pred_risk:
+        pset = set(range(p["start"], p["end"] + 1))
+        best_iou, best_j = 0.0, -1
+        for j, gt in enumerate(gt_risk):
+            if j in matched_gt or gt["grabacion"] != p["grabacion"]:
+                continue
+            gset = set(range(gt["start"], gt["end"] + 1))
+            inter = len(pset & gset)
+            if inter > 0:
+                iou = inter / len(pset | gset)
+                if iou >= IOU_THRESHOLD and iou > best_iou:
+                    best_iou, best_j = iou, j
+        if best_j >= 0:
+            matched_gt.add(best_j)
+            tp += 1
+        else:
+            fp_total += 1
+            ov_any = any(
+                gt["grabacion"] == p["grabacion"] and len(pset & set(range(gt["start"], gt["end"] + 1))) > 0
+                for gt in gt_blinks
+            )
+            if ov_any:
+                fp_cierre_corto += 1
+            elif p["frac_open"] >= 0.5:
+                fp_open += 1
+            else:
+                fp_transicion += 1
+
+    fn = len(gt_risk) - tp
+    recall_ev = tp / len(gt_risk) if gt_risk else 0.0
+    prec_est = tp / (tp + fp_total) if (tp + fp_total) else 0.0
+    f1_est = 2 * prec_est * recall_ev / (prec_est + recall_ev) if (prec_est + recall_ev) else 0.0
+    prec_open = tp / (tp + fp_open) if (tp + fp_open) else 0.0
+    f1_open = 2 * prec_open * recall_ev / (prec_open + recall_ev) if (prec_open + recall_ev) else 0.0
+
+    # Especificidad a nivel de frame de alerta de riesgo (>= min_frames consecutivos)
+    gt_risk_frames = set()
+    for gt in gt_risk:
+        for f in range(gt["start"], gt["end"] + 1):
+            gt_risk_frames.add((gt["grabacion"], f))
+    pred_risk_frames = set()
+    for p in pred_risk:
+        for f in range(p["start"], p["end"] + 1):
+            pred_risk_frames.add((p["grabacion"], f))
+
+    all_frames = set(zip(df_sim["grabacion"], df_sim["frame"].astype(int)))
+    tp_f = len(gt_risk_frames & pred_risk_frames)
+    fp_f = len(pred_risk_frames - gt_risk_frames)
+    fn_f = len(gt_risk_frames - pred_risk_frames)
+    tn_f = len(all_frames - (gt_risk_frames | pred_risk_frames))
+    esp_frames = tn_f / (tn_f + fp_f) if (tn_f + fp_f) else 0.0
+    rec_frames = tp_f / (tp_f + fn_f) if (tp_f + fn_f) else 0.0
+    prec_frames = tp_f / (tp_f + fp_f) if (tp_f + fp_f) else 0.0
+    f1_frames = 2 * prec_frames * rec_frames / (prec_frames + rec_frames) if (prec_frames + rec_frames) else 0.0
+
+    # Especificidad sobre parpadeos cortos reales (< 500 ms) que NO dispararon alerta de riesgo
+    fp_sobre_cortos = sum(
+        1 for gt in gt_short
+        if any(p["grabacion"] == gt["grabacion"] and
+               len(set(range(p["start"], p["end"] + 1)) & set(range(gt["start"], gt["end"] + 1))) > 0
+               for p in pred_risk)
+    )
+    tn_cortos = len(gt_short) - fp_sobre_cortos
+    esp_cortos = tn_cortos / len(gt_short) if gt_short else 0.0
+
+    resumen = pd.DataFrame([
+        {
+            "Nivel": f"Eventos_Riesgo (>={min_frames}_frames_consecutivos)",
+            "GT_Positivos": len(gt_risk),
+            "Pred_Positivos": len(pred_risk),
+            "TP": tp, "FN": fn, "FP_Total": fp_total,
+            "FP_En_Open": fp_open, "FP_En_Transicion": fp_transicion, "FP_Cierre_Corto": fp_cierre_corto,
+            "Recall": round(recall_ev, 4),
+            "Precision_Estricta": round(prec_est, 4), "F1_Estricto": round(f1_est, 4),
+            "Precision_vs_Open": round(prec_open, 4), "F1_vs_Open": round(f1_open, 4),
+            "Especificidad_Frames": round(esp_frames, 4),
+            "Especificidad_Parpadeos_Cortos": round(esp_cortos, 4),
+        },
+        {
+            "Nivel": f"Frames_Con_Alerta_Riesgo (>={min_frames}_frames)",
+            "GT_Positivos": len(gt_risk_frames),
+            "Pred_Positivos": len(pred_risk_frames),
+            "TP": tp_f, "FN": fn_f, "FP_Total": fp_f,
+            "FP_En_Open": np.nan, "FP_En_Transicion": np.nan, "FP_Cierre_Corto": np.nan,
+            "Recall": round(rec_frames, 4),
+            "Precision_Estricta": round(prec_frames, 4), "F1_Estricto": round(f1_frames, 4),
+            "Precision_vs_Open": np.nan, "F1_vs_Open": np.nan,
+            "Especificidad_Frames": round(esp_frames, 4),
+            "Especificidad_Parpadeos_Cortos": np.nan,
+        },
+    ])
+    return resumen
+
+
 def main():
     ap = argparse.ArgumentParser(description="Benchmark DMD sobre VIDEOS ORIGINALES HD (1280x720) por eventos y duración")
     ap.add_argument("--dir", default=str(DIR_DATASET_DMD), help="Carpeta dataset_dmd con los videos y JSONs")
@@ -641,6 +793,27 @@ def main():
     _guardar_csv(df_umbrales, salida / "metricas_por_duracion_ms.csv", index=False, encoding="utf-8-sig")
     _guardar_csv(df_por_grab, salida / "metricas_por_grabacion_eventos.csv", index=False, encoding="utf-8-sig")
     _guardar_csv(df_umbrales, salida / "metricas_resumen.csv", index=False, encoding="utf-8-sig")
+
+    # 5. Evaluación estricta de eventos de riesgo (>= 15 frames consecutivos / >= 500 ms)
+    min_f_riesgo = int(round((args.umbral_ms / 1000.0) * FPS_DMD))
+    df_riesgo = evaluar_eventos_riesgo_consecutivos(df_main, gt_blinks, min_f_riesgo, FPS_DMD)
+    _guardar_csv(df_riesgo, salida / "evaluacion_riesgo_500ms.csv", index=False, encoding="utf-8-sig")
+    r_ev = df_riesgo.iloc[0]
+    r_fr = df_riesgo.iloc[1]
+    print("\n" + "=" * 85)
+    print(f" EVALUACIÓN ESTRICTA DE EVENTOS DE RIESGO (>= {int(args.umbral_ms)} ms = >= {min_f_riesgo} frames consecutivos)")
+    print("=" * 85)
+    print(f"  [Nivel Evento] GT >= {min_f_riesgo} frames: {int(r_ev['GT_Positivos'])} | Predichos >= {min_f_riesgo} frames consecutivos: {int(r_ev['Pred_Positivos'])}")
+    print(f"    TP = {int(r_ev['TP'])} | FN = {int(r_ev['FN'])} | FP Total = {int(r_ev['FP_Total'])} "
+          f"(en open={int(r_ev['FP_En_Open'])}, en closing/opening={int(r_ev['FP_En_Transicion'])}, en close corto={int(r_ev['FP_Cierre_Corto'])})")
+    print(f"    Recall = {r_ev['Recall']:.4f} | Precisión (vs open) = {r_ev['Precision_vs_Open']:.4f} | F1 (vs open) = {r_ev['F1_vs_Open']:.4f}")
+    print(f"    Precisión Estricta = {r_ev['Precision_Estricta']:.4f} | F1 Estricto = {r_ev['F1_Estricto']:.4f}")
+    print(f"    Especificidad (sobre parpadeos cortos <{int(args.umbral_ms)}ms) = {r_ev['Especificidad_Parpadeos_Cortos']:.4f}")
+    print(f"  [Nivel Frame de Alerta] TP={int(r_fr['TP'])}, TN={88028 - int(r_fr['TP']) - int(r_fr['FP_Total']) - int(r_fr['FN'])}, "
+          f"FP={int(r_fr['FP_Total'])}, FN={int(r_fr['FN'])}")
+    print(f"    Recall = {r_fr['Recall']:.4f} | Especificidad = {r_fr['Especificidad_Frames']:.4f} | "
+          f"Precisión = {r_fr['Precision_Estricta']:.4f} | F1 = {r_fr['F1_Estricto']:.4f}")
+    print("=" * 85)
 
     graficar_deteccion_por_duracion(df_umbrales, salida / "deteccion_por_duracion_ms.png")
     graficar_dispersion_duraciones(df_gt_info, args.umbral_ms, salida / "dispersion_duraciones_ms.png")
