@@ -443,13 +443,7 @@ private:
 #elif defined(__linux__)
     void linux_mixer_loop() {
         FILE* pipe = ::popen(
-            "if command -v pw-play >/dev/null 2>&1; then "
-            "  exec pw-play --rate 48000 --channels 2 --format s16 --latency 60ms - 2>/dev/null; "
-            "elif command -v pacat >/dev/null 2>&1; then "
-            "  exec pacat --playback --format=s16le --rate=48000 --channels=2 --latency-msec=60 2>/dev/null; "
-            "else "
-            "  exec aplay -q -t raw -f S16_LE -c 2 -r 48000 --buffer-time=60000 - 2>/dev/null; "
-            "fi",
+            "aplay -q -t raw -f S16_LE -c 2 -r 48000 --buffer-time=60000 - 2>/dev/null",
             "w"
         );
         if (!pipe) {
