@@ -1,0 +1,55 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "rpi-native-release",
+            "displayName": "Raspberry Pi (Native Release)",
+            "description": "Native build inside Raspberry Pi (ARM/Linux)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+            }
+        },
+        {
+            "name": "rpi-cross-win",
+            "displayName": "Raspberry Pi (Cross-compile from Windows)",
+            "description": "Cross-compilation from Windows x86_64 to ARM64 Linux",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "toolchainFile": "${sourceDir}/cmake/rpi-aarch64-toolchain.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+            }
+        },
+        {
+            "name": "gcc-win-debug",
+            "displayName": "GCC Windows Debug",
+            "description": "Local Windows development via MSYS2 UCRT64",
+            "generator": "MinGW Makefiles",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+                "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
+                "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "rpi-native-release",
+            "configurePreset": "rpi-native-release"
+        },
+        {
+            "name": "rpi-cross-win",
+            "configurePreset": "rpi-cross-win"
+        },
+        {
+            "name": "gcc-win-debug",
+            "configurePreset": "gcc-win-debug"
+        }
+    ]
+}

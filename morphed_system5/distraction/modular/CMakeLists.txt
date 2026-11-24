@@ -1,0 +1,92 @@
+cmake_minimum_required(VERSION 3.16)
+project(modular_distraction LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Optimization and SIMD flags based on architecture
+if(MSVC)
+    add_compile_options(/O2 /W3)
+    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+        add_compile_options(/arch:AVX2)
+    endif()
+else()
+    add_compile_options(-O3 -Wall -Wextra)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        add_compile_options(-mavx2)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        # 64-bit ARM (Raspberry Pi OS 64-bit) enables NEON automatically with -O3
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "armv7l|armv8l|armhf")
+        # 32-bit ARM (Raspberry Pi OS 32-bit)
+        add_compile_options(-mfpu=neon-vfpv4 -mfloat-abi=hard)
+    endif()
+endif()
+
+if(DEFINED ENABLE_DEBUG_VIEWS)
+    set(_use_debug_views ${ENABLE_DEBUG_VIEWS})
+elseif(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(_use_debug_views ON)
+else()
+    set(_use_debug_views OFF)
+endif()
+
+find_package(Threads REQUIRED)
+if(_use_debug_views)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio dnn)
+else()
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio dnn)
+endif()
+find_package(dlib REQUIRED)
+
+set(MODULAR_DISTRACTION_SOURCES
+    src/CameraCapture.cpp
+    src/Preprocessor.cpp
+    src/GazeDetector.cpp
+    src/AlertLogic.cpp
+    src/AlertManager.cpp
+    src/ConsoleController.cpp
+    src/DebugVisualizer.cpp
+    src/FaceLandmarkDetector.cpp
+    src/FaceGeometry.cpp
+    src/HeadOrientationDetector.cpp
+    src/EarDetector.cpp
+    src/MarDetector.cpp
+    src/AudioManager.cpp
+    src/Calibration.cpp
+    src/SoundPlayer.cpp
+    src/PipelineCoordinator.cpp
+    src/main.cpp
+)
+
+add_executable(modular_distraction ${MODULAR_DISTRACTION_SOURCES})
+
+if(_use_debug_views)
+    target_compile_definitions(modular_distraction PRIVATE DEBUG_VIEWS)
+endif()
+
+target_include_directories(modular_distraction PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+target_link_libraries(modular_distraction PRIVATE
+    ${OpenCV_LIBS}
+    dlib::dlib
+    Threads::Threads
+)
+
+if(WIN32)
+    target_link_libraries(modular_distraction PRIVATE winmm)
+elseif(UNIX AND NOT APPLE)
+    find_library(ATOMIC_LIB atomic)
+    if(ATOMIC_LIB)
+        target_link_libraries(modular_distraction PRIVATE ${ATOMIC_LIB})
+    endif()
+endif()
+
+# Ensure input/ directory is mirrored to build output directory
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/input)
+    file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/input DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+endif()
