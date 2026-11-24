@@ -78,12 +78,12 @@ void log_auditory_alert(float gain_db, const std::string& reason) {
 AlertManager::AlertManager(AlertConfig config, AudioManager& audio)
     : config_(std::move(config)),
       audio_(audio),
-      window_start_time_(std::chrono::steady_clock::now()),
       last_alert_sound_time_(std::chrono::steady_clock::now() - std::chrono::seconds(10)) {}
 
 void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
     bool warmed_up_now = false;
-    long long warmup_secs = 0;
+    size_t mode_frames = 0;
+    long long sustained_window_ms = 0;
     bool trigger_distraction_alert = false;
     bool transitioned_to_safe = false;
     AlertLogic::DistractionAssessment assessment;
@@ -91,64 +91,69 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto now = detection.timestamp;
-        gaze_window_.push_back(detection);
+        mode_frames = std::max<size_t>(1, config_.mode_window_frames);
+        sustained_window_ms = config_.distraction_window.count();
 
-        // Prune entries older than the distraction window duration (default 2000 ms)
-        const auto cutoff = now - config_.distraction_window;
-        while (!gaze_window_.empty() && gaze_window_.front().timestamp < cutoff) {
+        gaze_window_.push_back(detection);
+        while (gaze_window_.size() > mode_frames) {
             gaze_window_.pop_front();
         }
 
-        // Check if system has accumulated enough data to span the warm-up window
-        if (!has_warmed_up_) {
-            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - window_start_time_);
-            if (elapsed >= config_.distraction_window) {
-                has_warmed_up_ = true;
-                if (!initial_warmup_logged_) {
-                    initial_warmup_logged_ = true;
-                    warmed_up_now = true;
-                    warmup_secs = std::chrono::duration_cast<std::chrono::seconds>(config_.distraction_window).count();
-                }
-            } else {
-                return; // Maintain default Safe state during warm-up
-            }
+        // Wait until the sliding mode window has accumulated mode_frames predictions
+        if (gaze_window_.size() < mode_frames) {
+            return;
+        }
+        if (!initial_warmup_logged_) {
+            initial_warmup_logged_ = true;
+            warmed_up_now = true;
         }
 
         // Do not trigger or evaluate distraction if a drowsiness alert is active or reproducing
-        if (is_drowsiness_alert_reproducing_locked()) {
+        if (is_drowsiness_alert_reproducing_locked() || current_state_ == DriverState::Drowsy) {
+            distracted_since_.reset();
             return;
         }
 
-        // Do not downgrade a high-risk drowsiness state
-        if (!gaze_window_.empty() && current_state_ != DriverState::Drowsy) {
-            assessment = AlertLogic::evaluate_distraction_mode(
-                gaze_window_,
-                config_.policy,
-                config_.min_confidence
-            );
+        assessment = AlertLogic::evaluate_distraction_mode(
+            gaze_window_,
+            config_.policy,
+            config_.min_confidence
+        );
 
-            if (assessment.total_votes > 0) {
-                if (assessment.is_distracted) {
-                    current_state_ = DriverState::Distracted;
-                    trigger_distraction_alert = true;
-                } else {
-                    if (current_state_ == DriverState::Distracted) {
-                        current_state_ = DriverState::Safe;
-                        transitioned_to_safe = true;
-                    }
-                }
+        if (assessment.total_votes == 0) {
+            distracted_since_.reset();
+            if (current_state_ == DriverState::Distracted) {
+                current_state_ = DriverState::Safe;
+                transitioned_to_safe = true;
+            }
+        } else if (assessment.is_distracted) {
+            if (!distracted_since_.has_value()) {
+                distracted_since_ = now;
+            }
+            const auto sustained = std::chrono::duration_cast<std::chrono::milliseconds>(now - *distracted_since_);
+            if (sustained >= config_.distraction_window) {
+                current_state_ = DriverState::Distracted;
+                trigger_distraction_alert = true;
+            }
+        } else {
+            distracted_since_.reset();
+            if (current_state_ == DriverState::Distracted) {
+                current_state_ = DriverState::Safe;
+                transitioned_to_safe = true;
             }
         }
     }
 
 #ifdef DEBUG_VIEWS
     if (warmed_up_now) {
-        std::cout << "[+] AlertManager: Initial " << warmup_secs
-                  << "s temporal window filled. Active mode evaluation started.\n";
+        std::cout << "[+] AlertManager: Initial " << mode_frames
+                  << "-frame mode window filled. Active distraction monitoring ("
+                  << sustained_window_ms << " ms sustained) started.\n";
     }
 #else
     (void)warmed_up_now;
-    (void)warmup_secs;
+    (void)mode_frames;
+    (void)sustained_window_ms;
 #endif
 
     if (trigger_distraction_alert) {
@@ -163,7 +168,8 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
 #ifdef DEBUG_VIEWS
         std::cout << "\n[ALERT] Distraction detected: Driver looking away from road!\n"
                   << "        Mode: NotLookingRoad (" << assessment.not_looking_votes << "/"
-                  << assessment.total_votes << " votes in 2.0s)\n"
+                  << assessment.total_votes << " votes in " << mode_frames << " frames, sustained >= "
+                  << sustained_window_ms << " ms)\n"
                   << "        Avg Looking Probability: " << std::fixed << std::setprecision(1)
                   << (assessment.avg_looking_prob * 100.0f) << "%\n";
 #endif
@@ -180,8 +186,7 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
 
         std::lock_guard<std::mutex> lock(mutex_);
         gaze_window_.clear();
-        has_warmed_up_ = false;
-        window_start_time_ = std::chrono::steady_clock::now();
+        distracted_since_.reset();
         if (current_state_ == DriverState::Distracted) {
             current_state_ = DriverState::Safe;
         }
@@ -189,7 +194,7 @@ void AlertManager::update_gaze(const DistractionDetectionResult& detection) {
 #ifdef DEBUG_VIEWS
         std::cout << "\n[INFO] Alert cleared: Driver attention returned to road.\n"
                   << "       Mode: LookingRoad (" << assessment.looking_votes << "/"
-                  << assessment.total_votes << " votes in 2.0s)\n";
+                  << assessment.total_votes << " votes in " << mode_frames << " frames)\n";
 #endif
         std::lock_guard<std::mutex> lock(mutex_);
         if (!is_drowsiness_alert_reproducing_locked()) {
@@ -267,7 +272,7 @@ void AlertManager::register_cue(CueType type, CueStrength strength, const std::s
 void AlertManager::update_somnolence(
     const EarAssessment& ear,
     const HeadOrientationAssessment& head,
-    const MarAssessment& mar
+    const YawnAssessment& yawn
 ) {
     std::vector<CueEvent> strong_cues_triggered;
     bool trigger_high_alert = false;
@@ -279,7 +284,7 @@ void AlertManager::update_somnolence(
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const bool is_yawning_suppression = (mar.yawn_duration_sec >= 0.2);
+        const bool is_yawning_suppression = (yawn.yawn_duration_sec >= 0.2);
 
         for (const auto& cue : ear.cues) {
             if (is_yawning_suppression && (cue.type == CueType::BlinkDuration || cue.type == CueType::Perclos)) {
@@ -290,12 +295,12 @@ void AlertManager::update_somnolence(
         if (head.cue.has_value()) {
             register_cue_locked(*head.cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
         }
-        if (mar.cue.has_value()) {
-            register_cue_locked(*mar.cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
+        if (yawn.cue.has_value()) {
+            register_cue_locked(*yawn.cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
         }
 
         const bool blink_active = !is_yawning_suppression && ear.in_blink_cycle;
-        const bool features_normal = !blink_active && !head.is_drooping && !mar.is_yawning;
+        const bool features_normal = !blink_active && !head.is_drooping && !yawn.is_yawning;
         if (current_state_ == DriverState::Drowsy) {
             if (features_normal && strong_cues_triggered.empty() && !trigger_high_alert) {
                 current_state_ = DriverState::Safe;
@@ -388,11 +393,10 @@ void AlertManager::reset() {
         gaze_window_.clear();
         cue_window_.clear();
         current_state_ = DriverState::Safe;
-        window_start_time_ = std::chrono::steady_clock::now();
+        distracted_since_.reset();
         last_alert_sound_time_ = std::chrono::steady_clock::now() - std::chrono::seconds(10);
         drowsiness_step_idx_ = 0;
         drowsiness_audio_active_ = false;
-        has_warmed_up_ = false;
         initial_warmup_logged_ = false;
     }
     audio_.stop();

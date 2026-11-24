@@ -129,6 +129,16 @@ struct MarAssessment {
     std::optional<CueEvent> cue; // Light: Yawn (>4.0s sustained)
 };
 
+/**
+ * @brief Result of single-frame CNN yawning probability and temporal yawn assessment.
+ */
+struct YawnAssessment {
+    float yawn_prob{0.0f};
+    double yawn_duration_sec{0.0};
+    bool is_yawning{false};
+    std::optional<CueEvent> cue; // Light: Yawn (>=1.0s sustained)
+};
+
 // ── 4. Component Configurations ─────────────────────────────────────────────
 
 /**
@@ -151,14 +161,15 @@ struct AuditoryAlertConfig {
 
     double drowsiness_repetition_rate_hz{63.5 / 60.0}; // 63.5 BPM (~1.058 Hz, ~944.9 ms interval)
     std::string drowsiness_sound_path{"input/sounds/single-beep-1850-Hz-975-Hz.wav"};
-    std::array<float, 5> drowsiness_gain_steps_db{-21.0f, -15.6f, -11.0f, -6.5f, 0.0f};
+    std::array<float, 5> drowsiness_gain_steps_db{-21.0f, -16.5f, -12.0f, -7.5f, -3.0f};
 };
 
 /**
  * @brief Configuration for AlertManager state machine & temporal window.
  */
 struct AlertConfig {
-    float min_confidence{0.70f};
+    float min_confidence{0.54f};
+    size_t mode_window_frames{20};
     std::chrono::milliseconds distraction_window{2000};
     ThresholdEvaluationPolicy policy{ThresholdEvaluationPolicy::BinarizeThreshold};
     std::chrono::seconds light_cue_window{120}; // 2 minutes
@@ -179,7 +190,7 @@ struct FaceLandmarkConfig {
  */
 struct HeadOrientationConfig {
     double kp_pitch{0.18};
-    double pitch_droop_thresh{-20.0};
+    double pitch_droop_thresh{-25.5}; //considering overall MAE in BU's HT dataset of 5.48 deg
     std::chrono::milliseconds droop_sustained_duration{1500};
 };
 
@@ -226,5 +237,17 @@ struct MarConfig {
     double mar_threshold{0.55};
     std::chrono::milliseconds time_for_ear_suppresion_by_yawn{200}; // 0.2s accumulator threshold
     std::chrono::seconds sustained_duration{4};
+    std::chrono::seconds alarm_cooldown{2};
+};
+
+/**
+ * @brief Configuration parameters for CNN yawning ONNX inference and temporal yawn tracking.
+ */
+struct YawnConfig {
+    std::string model_path{"input/cnn_yawning.onnx"};
+    cv::Size input_dimension{112, 112};
+    float prob_threshold{0.80f};
+    std::chrono::milliseconds time_for_ear_suppression_by_yawn{200}; // 0.2s accumulator threshold
+    std::chrono::milliseconds sustained_duration{1000};              // 1.0s (td=1.0s)
     std::chrono::seconds alarm_cooldown{2};
 };

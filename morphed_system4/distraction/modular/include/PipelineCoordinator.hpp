@@ -9,10 +9,10 @@
 #include "FaceLandmarkDetector.hpp"
 #include "GazeDetector.hpp"
 #include "HeadOrientationDetector.hpp"
-#include "MarDetector.hpp"
 #include "Preprocessor.hpp"
 #include "ThreadSafeMailbox.hpp"
 #include "Types.hpp"
+#include "YawnDetector.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -33,7 +33,9 @@ public:
         std::string backbone_path{};
         std::string head_path{};
         std::string predictor_path{};
-        float conf_threshold{0.70f};
+        std::string yawn_model_path{};
+        float conf_threshold{0.54f};
+        size_t mode_frames{20};
         int window_ms{2000};
         size_t seq_len{20};
         ThresholdEvaluationPolicy policy{ThresholdEvaluationPolicy::BinarizeThreshold};
@@ -79,6 +81,7 @@ private:
     static LSTMInferenceConfig build_model_config(const Options& options);
     static AlertConfig build_alert_config(const Options& options);
     static FaceLandmarkConfig build_face_config(const Options& options);
+    static YawnConfig build_yawn_config(const Options& options);
 
     void handle_console_command(ConsoleCommand cmd);
     void gaze_worker_loop();
@@ -108,7 +111,7 @@ private:
     FaceLandmarkDetector face_detector_;
     HeadOrientationDetector head_detector_;
     EarDetector ear_detector_;
-    MarDetector mar_detector_;
+    YawnDetector yawn_detector_;
     DebugVisualizer debug_visualizer_;
     CameraCapture camera_capture_;
     ConsoleController console_controller_;

@@ -44,8 +44,8 @@ public:
         double thresh_closure,
         double perclos_thresh,
         const HeadOrientationAssessment& head,
-        const MarAssessment& mar,
-        double mar_thresh,
+        const YawnAssessment& yawn,
+        float yawn_prob_thresh,
         double latency_ms,
         bool face_missing,
         bool calibrated
@@ -83,8 +83,8 @@ private:
         double ear_thresh_closure{0.18};
         double perclos_high_thresh{15.0};
         HeadOrientationAssessment head;
-        MarAssessment mar;
-        double mar_thresh{0.55};
+        YawnAssessment yawn;
+        float yawn_prob_thresh{0.80f};
         double somno_latency_ms{0.0};
         bool face_missing{false};
         bool calibrated{false};
@@ -131,8 +131,8 @@ public:
         double,
         double,
         const HeadOrientationAssessment&,
-        const MarAssessment&,
-        double,
+        const YawnAssessment&,
+        float,
         double,
         bool,
         bool

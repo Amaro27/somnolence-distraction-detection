@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,8 +28,9 @@ public:
     AlertManager(AlertConfig config, AudioManager& audio);
 
     /**
-     * @brief Pushes a new frame gaze classification into the 2.0-second sliding window.
-     * Evaluates mode and triggers/clears distraction alert accordingly.
+     * @brief Pushes a new frame gaze classification into the N-frame mode window (default 20).
+     * Evaluates mode and triggers distraction alert if NotLookingRoad mode persists for
+     * distraction_window (default 2.0 seconds).
      * @param detection Single-frame inference result.
      */
     void update_gaze(const DistractionDetectionResult& detection);
@@ -49,7 +51,7 @@ public:
     void update_somnolence(
         const EarAssessment& ear,
         const HeadOrientationAssessment& head,
-        const MarAssessment& mar
+        const YawnAssessment& yawn
     );
 
     /**
@@ -88,12 +90,11 @@ private:
     AudioManager& audio_;
     DriverState current_state_{DriverState::Safe};
 
-    std::deque<DistractionDetectionResult> gaze_window_; // 2.0s sliding window
+    std::deque<DistractionDetectionResult> gaze_window_; // N-frame sliding mode window (default 20)
     std::deque<CueEvent> cue_window_;                    // 2-minute light cue history
-    std::chrono::steady_clock::time_point window_start_time_;
+    std::optional<std::chrono::steady_clock::time_point> distracted_since_;
     std::chrono::steady_clock::time_point last_alert_sound_time_;
     size_t drowsiness_step_idx_{0};
     bool drowsiness_audio_active_{false};
-    bool has_warmed_up_{false};
     bool initial_warmup_logged_{false};
 };
