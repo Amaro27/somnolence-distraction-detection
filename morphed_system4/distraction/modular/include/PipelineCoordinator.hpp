@@ -34,7 +34,8 @@ public:
         std::string head_path{};
         std::string predictor_path{};
         std::string yawn_model_path{};
-        float conf_threshold{0.70f};
+        float conf_threshold{0.54f};
+        size_t mode_frames{20};
         int window_ms{2000};
         size_t seq_len{20};
         ThresholdEvaluationPolicy policy{ThresholdEvaluationPolicy::BinarizeThreshold};

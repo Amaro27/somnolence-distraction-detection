@@ -22,7 +22,7 @@ A high-performance, production-grade C++ implementation combining real-time spat
 
 - **Unified Multimodal Alert Coordinator (`AlertManager`)**:
   - Internal mutex protection for thread safety across concurrent gaze and somnolence workers.
-  - **Distraction Window**: 2.0-second sliding mode evaluation with configurable confidence threshold policies (`BinarizeThreshold` or `FilterUncertain`).
+  - **Distraction Window**: Two-stage temporal filter combining a 20-frame sliding mode window (with configurable confidence threshold policies `BinarizeThreshold` or `FilterUncertain`) and a 2.0-second sustained `NotLookingRoad` duration requirement (NHTSA rule).
   - **Somnolence Fusion**:
     - **Strong Cues** (immediate critical alarm): Micro-sleep ($>500\text{ ms}$) or High PERCLOS ($\ge 15.0\%$).
     - **Light Cues** (accumulate over a 2-minute sliding window): Medium PERCLOS ($7.5\% - 15.0\%$), Head Droop ($\le -20^\circ$ for $\ge 1.5\text{ s}$), and Sustained Yawn ($>4.0\text{ s}$).
@@ -121,7 +121,8 @@ Options:
   --head-path <path>         Path to resnet18_lstm_head.onnx
   --predictor-path <path>    Path to shape_predictor_68_face_landmarks.dat
   --conf-threshold <0.70>    Confidence threshold for gaze assessment (default: 0.70)
-  --window-ms <2000>         Sliding mode evaluation duration in ms (default: 2000)
+  --mode-frames <20>         Sliding mode window size in frames (default: 20)
+  --window-ms <2000>         Sustained distraction duration in ms (default: 2000)
   --seq-len <20>             LSTM sequence memory window in frames (default: 20)
   --policy <binarize|filter> Threshold evaluation policy (default: binarize)
   --moving                   Start in moving state (default: stationary)

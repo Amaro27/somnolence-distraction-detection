@@ -2,6 +2,7 @@
 #include "TelegramNotifier.hpp"
 #include "Types.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <iostream>
@@ -26,7 +27,8 @@ void print_help() {
               << "  --predictor-path <path> Path to shape_predictor_68_face_landmarks.dat\n"
               << "  --yawn-model-path <path> Path to cnn_yawning.onnx\n"
               << "  --conf-threshold <0.70> Confidence threshold for gaze assessment (default: 0.70)\n"
-              << "  --window-ms <2000>      Sliding mode evaluation duration in ms (default: 2000)\n"
+              << "  --mode-frames <20>      Sliding mode window size in frames (default: 20)\n"
+              << "  --window-ms <2000>      Sustained distraction duration in ms (default: 2000)\n"
               << "  --seq-len <20>          LSTM sequence memory window in frames (default: 20)\n"
               << "  --policy <binarize|filter> Threshold policy (default: binarize)\n"
               << "  --moving                Start in moving state (default: stationary)\n"
@@ -58,6 +60,8 @@ int main(int argc, char** argv) {
             options.yawn_model_path = argv[++i];
         } else if ((arg == "--conf-threshold" || arg == "--conf") && i + 1 < argc) {
             options.conf_threshold = std::stof(argv[++i]);
+        } else if ((arg == "--mode-frames" || arg == "--mode_frames") && i + 1 < argc) {
+            options.mode_frames = std::max<size_t>(1, static_cast<size_t>(std::stoul(argv[++i])));
         } else if ((arg == "--window-ms" || arg == "--window") && i + 1 < argc) {
             options.window_ms = std::stoi(argv[++i]);
         } else if ((arg == "--seq-len" || arg == "--seq_len") && i + 1 < argc) {

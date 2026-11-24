@@ -82,6 +82,7 @@ LSTMInferenceConfig PipelineCoordinator::build_model_config(const Options& optio
 AlertConfig PipelineCoordinator::build_alert_config(const Options& options) {
     AlertConfig cfg;
     cfg.min_confidence = options.conf_threshold;
+    cfg.mode_window_frames = std::max<size_t>(1, options.mode_frames);
     cfg.distraction_window = std::chrono::milliseconds(options.window_ms);
     cfg.policy = options.policy;
     cfg.light_cue_window = std::chrono::seconds(120);
@@ -235,7 +236,8 @@ int PipelineCoordinator::run(const std::atomic<bool>& external_shutdown) {
               << (is_moving_startup ? "MOVING (Uncalibrated - detections paused)" : "STATIONARY (Paused)")
               << "\n"
               << "    Confidence threshold  : " << (options_.conf_threshold * 100.0f) << "%\n"
-              << "    Mode window duration  : " << options_.window_ms << " ms\n"
+              << "    Mode window size      : " << alert_config_.mode_window_frames << " frames\n"
+              << "    Sustained distraction : " << options_.window_ms << " ms\n"
               << "    LSTM sequence length  : " << options_.seq_len << " frames\n\n" << std::flush;
 #endif
 

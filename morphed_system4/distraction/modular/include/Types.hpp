@@ -168,7 +168,8 @@ struct AuditoryAlertConfig {
  * @brief Configuration for AlertManager state machine & temporal window.
  */
 struct AlertConfig {
-    float min_confidence{0.70f};
+    float min_confidence{0.54f};
+    size_t mode_window_frames{20};
     std::chrono::milliseconds distraction_window{2000};
     ThresholdEvaluationPolicy policy{ThresholdEvaluationPolicy::BinarizeThreshold};
     std::chrono::seconds light_cue_window{120}; // 2 minutes
