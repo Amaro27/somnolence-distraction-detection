@@ -267,7 +267,7 @@ void AlertManager::register_cue(CueType type, CueStrength strength, const std::s
 void AlertManager::update_somnolence(
     const EarAssessment& ear,
     const HeadOrientationAssessment& head,
-    const MarAssessment& mar
+    const YawnAssessment& yawn
 ) {
     std::vector<CueEvent> strong_cues_triggered;
     bool trigger_high_alert = false;
@@ -279,7 +279,7 @@ void AlertManager::update_somnolence(
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const bool is_yawning_suppression = (mar.yawn_duration_sec >= 0.2);
+        const bool is_yawning_suppression = (yawn.yawn_duration_sec >= 0.2);
 
         for (const auto& cue : ear.cues) {
             if (is_yawning_suppression && (cue.type == CueType::BlinkDuration || cue.type == CueType::Perclos)) {
@@ -290,12 +290,12 @@ void AlertManager::update_somnolence(
         if (head.cue.has_value()) {
             register_cue_locked(*head.cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
         }
-        if (mar.cue.has_value()) {
-            register_cue_locked(*mar.cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
+        if (yawn.cue.has_value()) {
+            register_cue_locked(*yawn.cue, strong_cues_triggered, trigger_high_alert, trigger_reason, cues_snapshot);
         }
 
         const bool blink_active = !is_yawning_suppression && ear.in_blink_cycle;
-        const bool features_normal = !blink_active && !head.is_drooping && !mar.is_yawning;
+        const bool features_normal = !blink_active && !head.is_drooping && !yawn.is_yawning;
         if (current_state_ == DriverState::Drowsy) {
             if (features_normal && strong_cues_triggered.empty() && !trigger_high_alert) {
                 current_state_ = DriverState::Safe;

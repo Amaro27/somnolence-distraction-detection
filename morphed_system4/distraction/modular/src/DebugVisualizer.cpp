@@ -110,8 +110,8 @@ void DebugVisualizer::update_somnolence(
     double thresh_closure,
     double perclos_thresh,
     const HeadOrientationAssessment& head,
-    const MarAssessment& mar,
-    double mar_thresh,
+    const YawnAssessment& yawn,
+    float yawn_prob_thresh,
     double latency_ms,
     bool face_missing,
     bool calibrated
@@ -124,8 +124,8 @@ void DebugVisualizer::update_somnolence(
     snapshot_.ear_thresh_closure = thresh_closure;
     snapshot_.perclos_high_thresh = perclos_thresh;
     snapshot_.head = head;
-    snapshot_.mar = mar;
-    snapshot_.mar_thresh = mar_thresh;
+    snapshot_.yawn = yawn;
+    snapshot_.yawn_prob_thresh = yawn_prob_thresh;
     snapshot_.somno_latency_ms = latency_ms;
     snapshot_.face_missing = face_missing;
     snapshot_.calibrated = calibrated;
@@ -154,7 +154,7 @@ void DebugVisualizer::reset() noexcept {
     snapshot_.landmarks.reset();
     snapshot_.ear = EarAssessment{};
     snapshot_.head = HeadOrientationAssessment{};
-    snapshot_.mar = MarAssessment{};
+    snapshot_.yawn = YawnAssessment{};
     snapshot_.face_missing = false;
     snapshot_.calib_phase_text.clear();
     snapshot_.calib_collected = 0;
@@ -273,7 +273,7 @@ ConsoleCommand DebugVisualizer::render_step(SystemState sys_state, DriverState d
         if (snap.head.is_drooping) {
             draw_tag("HEAD DROOP", cv::Scalar(0, 165, 255));
         }
-        if (snap.mar.is_yawning) {
+        if (snap.yawn.is_yawning) {
             draw_tag("YAWNING", cv::Scalar(0, 255, 255));
         }
         if (snap.calibrated && sys_state == SystemState::MovingCalibrated &&
@@ -284,7 +284,7 @@ ConsoleCommand DebugVisualizer::render_step(SystemState sys_state, DriverState d
 
     // 2. Top-Left Telemetry HUD Panel
     const bool is_calibrating = (sys_state == SystemState::Calibrating);
-    const int hud_w = std::min(canvas.cols - 20, 580);
+    const int hud_w = std::min(canvas.cols - 20, 620);
     const int hud_h = is_calibrating ? 215 : 185;
     if (hud_w > 50 && canvas.rows > hud_h + 20) {
         cv::rectangle(canvas, cv::Rect(10, 10, hud_w, hud_h), cv::Scalar(20, 20, 20), -1);
@@ -421,54 +421,54 @@ ConsoleCommand DebugVisualizer::render_step(SystemState sys_state, DriverState d
             std::snprintf(
                 line_buf,
                 sizeof(line_buf),
-                "PERCLOS (30s): -- (Uncalibrated) | MAR: %.2f (Thresh: %.2f) | Yawn: %.1fs",
-                snap.mar.mar_raw,
-                snap.mar_thresh,
-                snap.mar.yawn_duration_sec
+                "PERCLOS (30s): -- (Uncalibrated) | Yawn Prob: %.2f (Thresh: %.2f) | Yawn: %.1fs",
+                snap.yawn.yawn_prob,
+                snap.yawn_prob_thresh,
+                snap.yawn.yawn_duration_sec
             );
             perclos_color = cv::Scalar(160, 160, 160);
         } else if (sys_state != SystemState::MovingCalibrated) {
             std::snprintf(
                 line_buf,
                 sizeof(line_buf),
-                "PERCLOS (30s): -- (Stopped) | MAR: %.2f (Thresh: %.2f) | Yawn: %.1fs",
-                snap.mar.mar_raw,
-                snap.mar_thresh,
-                snap.mar.yawn_duration_sec
+                "PERCLOS (30s): -- (Stopped) | Yawn Prob: %.2f (Thresh: %.2f) | Yawn: %.1fs",
+                snap.yawn.yawn_prob,
+                snap.yawn_prob_thresh,
+                snap.yawn.yawn_duration_sec
             );
             perclos_color = cv::Scalar(160, 160, 160);
         } else if (!snap.ear.perclos_warmed_up) {
             std::snprintf(
                 line_buf,
                 sizeof(line_buf),
-                "PERCLOS (30s): %.1f%% [Warmup: %.0fs] | MAR: %.2f (Thresh: %.2f) | Yawn: %.1fs",
+                "PERCLOS (30s): %.1f%% [Warmup: %.0fs] | Yawn Prob: %.2f (Thresh: %.2f) | Yawn: %.1fs",
                 snap.ear.perclos_pct,
                 snap.ear.perclos_warmup_remaining_sec,
-                snap.mar.mar_raw,
-                snap.mar_thresh,
-                snap.mar.yawn_duration_sec
+                snap.yawn.yawn_prob,
+                snap.yawn_prob_thresh,
+                snap.yawn.yawn_duration_sec
             );
             perclos_color = cv::Scalar(200, 230, 255);
         } else if (snap.ear.perclos_pct >= snap.perclos_high_thresh) {
             std::snprintf(
                 line_buf,
                 sizeof(line_buf),
-                "PERCLOS (30s): %.1f%% [FATIGUE >=%.0f%%] | MAR: %.2f | Yawn: %.1fs",
+                "PERCLOS (30s): %.1f%% [FATIGUE >=%.0f%%] | Yawn Prob: %.2f | Yawn: %.1fs",
                 snap.ear.perclos_pct,
                 snap.perclos_high_thresh,
-                snap.mar.mar_raw,
-                snap.mar.yawn_duration_sec
+                snap.yawn.yawn_prob,
+                snap.yawn.yawn_duration_sec
             );
             perclos_color = cv::Scalar(0, 0, 255);
         } else {
             std::snprintf(
                 line_buf,
                 sizeof(line_buf),
-                "PERCLOS (30s): %.1f%% | MAR: %.2f (Thresh: %.2f) | Yawn: %.1fs",
+                "PERCLOS (30s): %.1f%% | Yawn Prob: %.2f (Thresh: %.2f) | Yawn: %.1fs",
                 snap.ear.perclos_pct,
-                snap.mar.mar_raw,
-                snap.mar_thresh,
-                snap.mar.yawn_duration_sec
+                snap.yawn.yawn_prob,
+                snap.yawn_prob_thresh,
+                snap.yawn.yawn_duration_sec
             );
             perclos_color = cv::Scalar(200, 230, 255);
         }
@@ -492,6 +492,19 @@ ConsoleCommand DebugVisualizer::render_step(SystemState sys_state, DriverState d
             0.45,
             snap.face_missing ? cv::Scalar(0, 100, 255) : cv::Scalar(220, 220, 220),
             1,
+            cv::LINE_AA
+        );
+    }
+
+    if (!snap.landmarks.has_value() && snap.yawn.is_yawning && canvas.rows > hud_h + 60) {
+        cv::putText(
+            canvas,
+            "YAWNING",
+            cv::Point(16, 10 + hud_h + 26),
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.65,
+            cv::Scalar(0, 255, 255),
+            2,
             cv::LINE_AA
         );
     }

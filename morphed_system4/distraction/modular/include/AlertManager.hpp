@@ -49,7 +49,7 @@ public:
     void update_somnolence(
         const EarAssessment& ear,
         const HeadOrientationAssessment& head,
-        const MarAssessment& mar
+        const YawnAssessment& yawn
     );
 
     /**

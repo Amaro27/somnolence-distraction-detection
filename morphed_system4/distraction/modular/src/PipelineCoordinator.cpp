@@ -96,6 +96,14 @@ FaceLandmarkConfig PipelineCoordinator::build_face_config(const Options& options
     return cfg;
 }
 
+YawnConfig PipelineCoordinator::build_yawn_config(const Options& options) {
+    YawnConfig cfg;
+    if (!options.yawn_model_path.empty()) {
+        cfg.model_path = options.yawn_model_path;
+    }
+    return cfg;
+}
+
 PipelineCoordinator::PipelineCoordinator(Options options)
     : options_(std::move(options)),
       model_config_(build_model_config(options_)),
@@ -109,6 +117,7 @@ PipelineCoordinator::PipelineCoordinator(Options options)
       gaze_detector_(model_config_),
       preprocessor_(model_config_.input_dimension),
       face_detector_(build_face_config(options_)),
+      yawn_detector_(build_yawn_config(options_)),
       debug_visualizer_(),
       camera_capture_(options_.source, {mailbox_gaze_, mailbox_somno_, debug_visualizer_.mailbox()}) {}
 
@@ -131,6 +140,13 @@ bool PipelineCoordinator::initialize() {
     if (!face_detector_.initialize()) {
 #ifdef DEBUG_VIEWS
         std::cerr << "[!] Fatal: Could not initialize Dlib shape predictor.\n";
+#endif
+        return false;
+    }
+
+    if (!yawn_detector_.initialize()) {
+#ifdef DEBUG_VIEWS
+        std::cerr << "[!] Fatal: Could not initialize yawning CNN ONNX model.\n";
 #endif
         return false;
     }
@@ -436,7 +452,7 @@ void PipelineCoordinator::somnolence_worker_loop() {
                     auto now_calib = std::chrono::steady_clock::now();
                     ear_detector_.apply_baseline(result->ear_open, result->ear_closed, now_calib);
                     head_detector_.apply_baseline(result->neutral_rho);
-                    mar_detector_.reset();
+                    yawn_detector_.reset();
                     face_detector_.reset();
                     was_calibrated = true;
                     system_state_.store(SystemState::StationaryCalibrated);
@@ -469,6 +485,13 @@ void PipelineCoordinator::somnolence_worker_loop() {
 
             const auto t_work_start = std::chrono::steady_clock::now();
 
+            // Full-frame CNN yawning detection runs independently of Dlib face detection
+            const YawnAssessment yawn_res = yawn_detector_.process(frame, t_work_start);
+            const double yawn_suppress_sec = std::chrono::duration<double>(
+                yawn_detector_.config().time_for_ear_suppression_by_yawn
+            ).count();
+            const bool suppress_by_yawn = (yawn_res.yawn_duration_sec >= yawn_suppress_sec);
+
             // When face is missing, throttle face search to lost_face_probe_interval (default 500ms)
             // to prioritize CPU throughput for the distraction worker.
             const bool face_missing = face_detector_.is_face_missing();
@@ -483,32 +506,18 @@ void PipelineCoordinator::somnolence_worker_loop() {
             }
             EarAssessment ear_res{};
             HeadOrientationAssessment head_res{};
-            MarAssessment mar_res{};
             if (landmarks_opt.has_value()) {
                 const auto& landmarks = landmarks_opt.value();
 
-                // Evaluate mouth aspect ratio (MAR) and leaky yawn accumulator first
-                mar_res = mar_detector_.process(landmarks, t_work_start);
-
-                const double yawn_suppress_sec = std::chrono::duration<double>(
-                    mar_detector_.config().time_for_ear_suppresion_by_yawn
-                ).count();
-                const bool suppress_by_yawn = (mar_res.yawn_duration_sec >= yawn_suppress_sec);
-
                 ear_res = ear_detector_.process(landmarks, t_work_start, suppress_by_yawn, is_moving_calibrated);
                 head_res = head_detector_.process(landmarks, t_work_start, suppress_by_yawn);
-
-                if (is_moving_calibrated) {
-                    alert_manager_.update_somnolence(ear_res, head_res, mar_res);
-                }
             } else {
-                mar_res = mar_detector_.on_face_lost(t_work_start);
                 ear_res = ear_detector_.on_face_lost(t_work_start);
                 head_res = head_detector_.on_face_lost(t_work_start);
+            }
 
-                if (is_moving_calibrated) {
-                    alert_manager_.tick_drowsiness_if_active();
-                }
+            if (is_moving_calibrated) {
+                alert_manager_.update_somnolence(ear_res, head_res, yawn_res);
             }
 
             const auto t_end = std::chrono::steady_clock::now();
@@ -520,8 +529,8 @@ void PipelineCoordinator::somnolence_worker_loop() {
                 ear_detector_.thresh_closure(),
                 ear_detector_.config().perclos_high_thresh,
                 head_res,
-                mar_res,
-                mar_detector_.config().mar_threshold,
+                yawn_res,
+                yawn_detector_.config().prob_threshold,
                 work_ms,
                 face_detector_.is_face_missing(),
                 ear_detector_.is_calibrated()
