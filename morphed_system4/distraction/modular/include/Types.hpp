@@ -161,7 +161,7 @@ struct AuditoryAlertConfig {
 
     double drowsiness_repetition_rate_hz{63.5 / 60.0}; // 63.5 BPM (~1.058 Hz, ~944.9 ms interval)
     std::string drowsiness_sound_path{"input/sounds/single-beep-1850-Hz-975-Hz.wav"};
-    std::array<float, 5> drowsiness_gain_steps_db{-21.0f, -15.6f, -11.0f, -6.5f, 0.0f};
+    std::array<float, 5> drowsiness_gain_steps_db{-21.0f, -16.5f, -12.0f, -7.5f, -3.0f};
 };
 
 /**
@@ -190,7 +190,7 @@ struct FaceLandmarkConfig {
  */
 struct HeadOrientationConfig {
     double kp_pitch{0.18};
-    double pitch_droop_thresh{-20.0};
+    double pitch_droop_thresh{-25.5}; //considering overall MAE in BU's HT dataset of 5.48 deg
     std::chrono::milliseconds droop_sustained_duration{1500};
 };
 
