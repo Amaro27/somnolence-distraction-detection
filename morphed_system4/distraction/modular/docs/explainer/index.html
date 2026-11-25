@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Real-Time System Architecture Explainer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Driver Monitoring Real-Time Explainer</h1>
+      <span id="chapter-subtitle" class="subtitle"></span>
+    </div>
+    <div class="topbar-actions">
+      <nav id="chapter-tabs" class="tabs" aria-label="Chapters"></nav>
+      <button id="export-svg-btn" class="btn btn-ghost" type="button" title="Download current diagram as clean vector SVG">Export SVG</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="stage-card">
+      <div class="stage-bar">
+        <div id="mode-tabs" class="mode-tabs" role="tablist"></div>
+        <span id="step-counter" class="step-counter"></span>
+      </div>
+
+      <svg id="stage" viewBox="0 0 960 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Architecture diagram"></svg>
+
+      <footer id="legend" class="legend" aria-label="Diagram legend"></footer>
+    </section>
+
+    <aside class="narration-card" aria-live="polite">
+      <div class="nav-row">
+        <button id="prev-btn" class="btn" type="button">&larr; Back</button>
+        <div id="step-dots" class="dots" aria-label="Step progress"></div>
+        <button id="next-btn" class="btn btn-primary" type="button">Next &rarr;</button>
+      </div>
+      <p class="kbd-hint">Tip: use &larr; / &rarr; arrow keys to step through.</p>
+
+      <h2 id="step-title" class="step-title"></h2>
+      <p id="step-concept" class="step-concept"></p>
+
+      <details id="tier2-box" class="disclosure">
+        <summary>Implementation Note</summary>
+        <p id="step-note" class="disclosure-body"></p>
+      </details>
+
+      <details id="tier3-box" class="disclosure disclosure-code">
+        <summary>C++ Source Reference</summary>
+        <pre id="step-coderef" class="code-ref"></pre>
+      </details>
+    </aside>
+  </main>
+
+  <script src="chapters/ch1_thread_map.js"></script>
+  <script src="engine.js"></script>
+</body>
+</html>
