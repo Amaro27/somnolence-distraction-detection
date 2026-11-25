@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trigger Estimation &amp; FSM Explainer (MS6)</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Trigger Estimation &amp; FSM Explainer (MS6)</h1>
+      <span id="subview-subtitle" class="subtitle"></span>
+    </div>
+    <div class="topbar-actions">
+      <nav id="section-tabs" class="tabs" aria-label="Sections"></nav>
+      <a class="btn btn-ghost" href="../explainer/index.html" title="Open Bird's-Eye Real-Time Architecture Explainer">&larr; System Runtime</a>
+      <button id="export-svg-btn" class="btn btn-ghost" type="button" title="Download current flowchart as clean vector SVG">Export SVG</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="stage-card">
+      <div class="subview-bar">
+        <div id="subview-tabs" class="subview-tabs" role="tablist" aria-label="Sub-views"></div>
+      </div>
+
+      <div class="stage-bar">
+        <div id="mode-tabs" class="mode-tabs" role="tablist" aria-label="Flowchart view modes"></div>
+        <div class="stage-meta">
+          <button id="back-portal-btn" class="btn back-portal-btn" type="button" hidden></button>
+          <span id="step-counter" class="step-counter"></span>
+        </div>
+      </div>
+
+      <svg id="stage" viewBox="0 0 1120 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Trigger and FSM flowchart"></svg>
+
+      <footer id="legend" class="legend" aria-label="Flowchart legend"></footer>
+    </section>
+
+    <aside class="narration-card" aria-live="polite">
+      <div id="trace-nav" class="nav-row">
+        <button id="prev-btn" class="btn" type="button">&larr; Back</button>
+        <div id="step-dots" class="dots" aria-label="Step progress"></div>
+        <button id="next-btn" class="btn btn-primary" type="button">Next &rarr;</button>
+      </div>
+      <p id="kbd-hint" class="kbd-hint">Click any node for details, click GOTO/FROM portals to jump, or choose a Trace to step through Yes/No paths.</p>
+
+      <div class="info-header">
+        <span id="info-badge" class="info-badge"></span>
+        <button id="clear-sel-btn" class="btn btn-mini" type="button" hidden>Overview</button>
+      </div>
+
+      <h2 id="step-title" class="step-title"></h2>
+      <p id="step-concept" class="step-concept"></p>
+
+      <details id="tier2-box" class="disclosure">
+        <summary>Implementation &amp; Edge-Case Note</summary>
+        <p id="step-note" class="disclosure-body"></p>
+      </details>
+
+      <details id="tier3-box" class="disclosure disclosure-code">
+        <summary>C++ Source Reference</summary>
+        <pre id="step-coderef" class="code-ref"></pre>
+      </details>
+
+      <div class="portal-actions">
+        <button id="portal-jump-btn" class="btn btn-primary portal-jump-btn" type="button" hidden></button>
+      </div>
+    </aside>
+  </main>
+
+  <script src="sections/sec1_vehicle_calib_fsm.js"></script>
+  <script src="sections/sec2_head_droop.js"></script>
+  <script src="sections/sec3_blink_perclos.js"></script>
+  <script src="sections/sec4_yawning.js"></script>
+  <script src="sections/sec5_distraction.js"></script>
+  <script src="sections/sec6_alarms_dispatcher.js"></script>
+  <script src="flowchart_engine.js"></script>
+</body>
+</html>

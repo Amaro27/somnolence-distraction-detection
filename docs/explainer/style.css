@@ -45,6 +45,10 @@ body {
   font-size: 0.84rem;
   font-weight: 600;
   cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .tab-btn.active, .btn-primary {
   background: var(--accent);
