@@ -1,5 +1,6 @@
 #include "PipelineCoordinator.hpp"
 #include "Calibration.hpp"
+#include "MPU6050.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -190,6 +191,9 @@ void PipelineCoordinator::stop() {
     if (somnolence_worker_.joinable()) {
         somnolence_worker_.join();
     }
+    if (imu_worker_.joinable()) {
+        imu_worker_.join();
+    }
 
     console_controller_.stop();
 
@@ -215,6 +219,9 @@ int PipelineCoordinator::run(const std::atomic<bool>& external_shutdown) {
     // Spawn worker threads
     gaze_worker_ = std::thread(&PipelineCoordinator::gaze_worker_loop, this);
     somnolence_worker_ = std::thread(&PipelineCoordinator::somnolence_worker_loop, this);
+    if (options_.use_imu) {
+        imu_worker_ = std::thread(&PipelineCoordinator::imu_worker_loop, this);
+    }
 
     // Fail-fast camera initialization (single device open)
     if (!camera_capture_.start()) {
@@ -549,3 +556,106 @@ void PipelineCoordinator::somnolence_worker_loop() {
 #endif
     }
 }
+
+void PipelineCoordinator::imu_worker_loop() {
+#ifdef DEBUG_VIEWS
+    std::cout << "[IMU] Initializing MPU-6050 on " << options_.imu_bus 
+              << " (addr: 0x" << std::hex << (int)options_.imu_address << std::dec << ")...\n" << std::flush;
+#endif
+    MPU6050 imu(options_.imu_bus, options_.imu_address);
+    if (!imu.init()) {
+#ifdef DEBUG_VIEWS
+        std::cerr << "[IMU] Failed to connect to MPU-6050! IMU automated gating disabled.\n" << std::flush;
+#endif
+        return;
+    }
+
+#ifdef DEBUG_VIEWS
+    std::cout << "[IMU] Connected successfully! Automatic vehicle movement gating active.\n" << std::flush;
+#endif
+
+    constexpr int FILTER_SIZE = 5;
+    float mag_buffer[FILTER_SIZE] = {9.81f, 9.81f, 9.81f, 9.81f, 9.81f};
+    int filter_idx = 0;
+
+    const float thresh_high = options_.imu_threshold_high;
+    const float thresh_low = options_.imu_threshold_low;
+    const int SAMPLES_TO_MOVE = 4;
+    const int SAMPLES_TO_PARK = 15;
+
+    int count_motion = 0;
+    int count_still = 0;
+    bool is_moving = false;
+
+    while (!shutdown_requested_.load(std::memory_order_relaxed)) {
+        const auto loop_start = std::chrono::steady_clock::now();
+        const auto reading = imu.read();
+
+        if (reading.valid) {
+            mag_buffer[filter_idx] = reading.accel.mag;
+            filter_idx = (filter_idx + 1) % FILTER_SIZE;
+
+            float smoothed_mag = 0.0f;
+            for (int i = 0; i < FILTER_SIZE; ++i) {
+                smoothed_mag += mag_buffer[i];
+            }
+            smoothed_mag /= FILTER_SIZE;
+
+            const float dynamic_motion = std::abs(smoothed_mag - MPU6050::GRAVITY_CONST);
+
+            if (dynamic_motion > thresh_high) {
+                count_motion++;
+                count_still = 0;
+                if (count_motion >= SAMPLES_TO_MOVE && !is_moving) {
+                    is_moving = true;
+                    vehicle_moving_.store(true, std::memory_order_release);
+
+                    // Transition system state to Moving
+                    const SystemState current = system_state_.load();
+                    if (current == SystemState::StationaryCalibrated) {
+                        system_state_.store(SystemState::MovingCalibrated);
+#ifdef DEBUG_VIEWS
+                        std::cout << "\n[IMU] Vehicle motion detected -> SystemState: MOVING (Monitoring Enabled)\n" << std::flush;
+#endif
+                    } else if (current == SystemState::StationaryUncalibrated) {
+                        system_state_.store(SystemState::MovingUncalibrated);
+#ifdef DEBUG_VIEWS
+                        std::cout << "\n[IMU] Vehicle motion detected -> SystemState: MOVING (Uncalibrated)\n" << std::flush;
+#endif
+                    }
+                }
+            } else if (dynamic_motion < thresh_low) {
+                count_still++;
+                count_motion = 0;
+                if (count_still >= SAMPLES_TO_PARK && is_moving) {
+                    is_moving = false;
+                    vehicle_moving_.store(false, std::memory_order_release);
+
+                    // Transition system state to Stationary
+                    const SystemState current = system_state_.load();
+                    if (current == SystemState::MovingCalibrated) {
+                        system_state_.store(SystemState::StationaryCalibrated);
+                        alert_manager_.reset();
+                        ear_detector_.clear_perclos();
+                        gaze_reset_requested_.store(true, std::memory_order_release);
+                        debug_visualizer_.reset();
+#ifdef DEBUG_VIEWS
+                        std::cout << "\n[IMU] Vehicle stopped -> SystemState: STATIONARY (Monitoring Paused)\n" << std::flush;
+#endif
+                    } else if (current == SystemState::MovingUncalibrated) {
+                        system_state_.store(SystemState::StationaryUncalibrated);
+                        alert_manager_.reset();
+                        gaze_reset_requested_.store(true, std::memory_order_release);
+                        debug_visualizer_.reset();
+#ifdef DEBUG_VIEWS
+                        std::cout << "\n[IMU] Vehicle stopped -> SystemState: STATIONARY\n" << std::flush;
+#endif
+                    }
+                }
+            }
+        }
+
+        std::this_thread::sleep_until(loop_start + std::chrono::milliseconds(50)); // 20 Hz
+    }
+}
+
