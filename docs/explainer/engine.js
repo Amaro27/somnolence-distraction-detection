@@ -12,7 +12,8 @@
     mutex:   { label: "Mutex Lock", css: "border:2px solid #d97706;background:#fef3c7;" },
     atomic:  { label: "Atomic Flag / State", css: "border:2px solid #059669;background:#d1fae5;border-radius:9px;" },
     sync:    { label: "Frame / Direct Flow", css: "border-top:3px solid #2563eb;height:3px;border-radius:0;" },
-    async:   { label: "Detached / Async", css: "border-top:2px dashed #7c3aed;height:2px;border-radius:0;" }
+    async:   { label: "Detached / Async", css: "border-top:2px dashed #7c3aed;height:2px;border-radius:0;" },
+    debug:   { label: "Optional Debug / Signal", css: "border-top:2px dashed #7c3aed;height:2px;border-radius:0;" }
   };
 
   function svgEl(tag, attrs = {}, text = null) {
@@ -81,14 +82,14 @@
           }, el.sublabel));
         }
       } else if (el.kind === "box") {
-        const isAsync = el.badge === "async";
+        const isDashed = el.badge === "async" || el.badge === "debug";
         const isMutex = el.badge === "mutex";
-        const stroke = isAsync ? "#7c3aed" : isMutex ? "#d97706" : "#3b82f6";
-        const fill = isAsync ? "#faf5ff" : isMutex ? "#fffbeb" : "#ffffff";
+        const stroke = isDashed ? "#7c3aed" : isMutex ? "#d97706" : "#3b82f6";
+        const fill = isDashed ? "#faf5ff" : isMutex ? "#fffbeb" : "#ffffff";
         g.appendChild(svgEl("rect", {
           x: el.x, y: el.y, width: el.w, height: el.h, rx: 8,
           fill, stroke, "stroke-width": 1.8,
-          "stroke-dasharray": isAsync ? "6 4" : null, class: "card-bg"
+          "stroke-dasharray": isDashed ? "6 4" : null, class: "card-bg"
         }));
         const cx = el.x + el.w / 2;
         const baseY = el.pythonOrigin ? el.y + el.h * 0.36 : el.y + el.h * 0.44;
@@ -112,14 +113,15 @@
             x: el.x + el.w - 32, y: el.y + 18, "text-anchor": "middle",
             "font-size": 9.5, "font-weight": 700, fill: "#92400e"
           }, "MUTEX"));
-        } else if (isAsync) {
+        } else if (isDashed) {
+          const tag = el.badge === "debug" ? "DEBUG" : "ASYNC";
           g.appendChild(svgEl("rect", {
             x: el.x + el.w - 54, y: el.y + 6, width: 48, height: 17, rx: 4, fill: "#ede9fe"
           }));
           g.appendChild(svgEl("text", {
             x: el.x + el.w - 30, y: el.y + 18, "text-anchor": "middle",
             "font-size": 9.5, "font-weight": 700, fill: "#5b21b6"
-          }, "ASYNC"));
+          }, tag));
         }
       } else if (el.kind === "mailbox") {
         g.appendChild(svgEl("rect", {
