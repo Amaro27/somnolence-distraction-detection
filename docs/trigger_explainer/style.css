@@ -15,6 +15,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   margin: 0;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -202,6 +203,7 @@ body {
 }
 .disclosure-code { background: #f8fafc; }
 .disclosure summary { font-size: 0.83rem; font-weight: 600; cursor: pointer; }
+.disclosure summary strong { font-weight: 700; color: var(--ink); }
 .disclosure-body { margin: 8px 0 0; font-size: 0.84rem; color: #334155; white-space: pre-line; }
 .code-ref {
   margin: 8px 0 0;

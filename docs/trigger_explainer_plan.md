@@ -47,17 +47,18 @@ docs/trigger_explainer/
 3. **Clickable `GOTO` / `FROM` Off-Page Portals with Return Breadcrumb**:
    - Every `GOTO` and `FROM` portal node stores `{ sectionId, subviewId, highlightNodeId }`.
    - Clicking a portal jumps straight to the target flowchart, highlights the corresponding entry/target node, and pushes the caller onto a navigation history stack—surfacing a `"<- Back to [Caller Section / Sub-view]"` pill in the stage bar.
-4. **On-Canvas Math & Color-Coded Flowchart Grammar (Light Paper-Ready Theme, English)**:
-   - **Process Box** (`rect`, white fill `#ffffff`, slate/blue stroke `#2563eb` or `#475569`): Exact formulas, buffer updates, and clamped `dt` accumulators (`accum += dt`, `accum -= 2.0 * dt`).
-   - **Decision Diamond** (`polygon`, indigo stroke `#4f46e5`, light tint `#eef2ff`): Exact inequalities and state checks (`pitch <= -25.5 deg?`, `P(road) >= 0.54?`, `SystemState == MovingCalibrated?`) with crisp `YES` / `NO` edge labels.
+4. **Clean Human-Readable Nodes & Color-Coded Flowchart Grammar (Light Paper-Ready Theme, English)**:
+   - **Process Box** (`rect`, white fill `#ffffff`, slate/blue stroke `#2563eb` or `#475569`): Clean human-readable step title + optional short summary with zero C++ identifiers, underscores, or raw expressions on-canvas (exact math/code lives inside the **`Code:`** side-panel toggle).
+   - **Decision Diamond** (`polygon`, indigo stroke `#4f46e5`, light tint `#eef2ff`): Clear domain question with exact physical thresholds (`Pitch <= -25.5 deg?`, `Looking-Road Prob >= 54%?`, `Moving & Calibrated?`) and crisp `YES` / `NO` edge labels.
    - **Green Terminal Pill** (`RETURN` / `SKIP FRAME`, `#16a34a` border, `#dcfce7` fill, `#14532d` text): Clean cycle exit.
    - **Pink/Coral Terminal Pill** (`DROWSY` / `DISTRACTED`, `#e11d48` border, `#ffe4e6` fill, `#881337` text): Fused-view alarm verdict.
    - **Blue Outgoing Cut-Off Portal** (`GOTO ...` / `SIGNAL ...`, `#0284c7` border, `#e0f2fe` fill, `#0c4a6e` text, right-chevron/tag accent): Exit across a C++ class, thread, or mutex boundary.
    - **Amber Incoming / FSM / Lock Badge** (`FROM ...` / `READ FSM` / `ATOMIC` / `MUTEX`, `#d97706` border, `#fef3c7` fill, `#78350f` text): External state read, baseline injection, atomic reset consume, or lock boundary.
-5. **3-Tier Side Panel Disclosures**:
-   - **Tier 1 (Always Visible)**: Concise plain-English explanation of the selected node or active trace step and why the branch rule exists.
-   - **Tier 2 (Collapsed — Implementation & Edge-Case Note)**: Clamped `dt` rules (`MathUtils::compute_clamped_dt` clamping gaps `> 0.15 s` to `0.033 s`), hysteresis/decay asymmetries, doc-vs-code nuances, and concurrency caveats.
-   - **Tier 3 (Collapsed — C++ Source Reference)**: Exact `morphed_system6/distraction/modular/` file paths, class/function symbols, and verified line ranges.
+5. **4-Layer Side Panel Disclosures**:
+   - **Layer 1 — General Description (Always Visible)**: Human-readable, symbol-free explanation of the overview, selected node, or active trace step.
+   - **Layer 2 — `Code:` (Collapsed Bold Toggle)**: Exact C++ expressions, equations, and control-flow snippets implementing that block or step.
+   - **Layer 3 — Implementation & Edge-Case Note (Collapsed)**: Clamped time-step rules, hysteresis/decay asymmetries, doc-vs-code nuances, and concurrency caveats.
+   - **Layer 4 — C++ Source Reference (Collapsed)**: Exact `morphed_system6/distraction/modular/` file paths, class/function symbols, and verified line ranges.
 
 ---
 
@@ -556,9 +557,9 @@ Once the reader has inspected each cut-off trigger and FSM diagram individually,
 
 ### Build & Verification Status
 - **Phase 1 Build — Complete (`docs/trigger_explainer/`)**:
-  1. Built `docs/trigger_explainer/index.html`, `style.css`, and `flowchart_engine.js` (process boxes, decision diamonds, green `RETURN`/`SKIP` pills, coral `DROWSY`/`DISTRACTED` pills, clickable `GOTO`/`FROM` portals with `"<- Back"` navigation history stack, full-flowchart upfront display + branch trace spotlighting, 3-tier side-panel disclosures, and clean SVG export). Added cross-navigation links between `docs/explainer/index.html` and `docs/trigger_explainer/index.html`.
-  2. Authored `sections/sec1_vehicle_calib_fsm.js` through `sections/sec6_alarms_dispatcher.js` (all 6 sections / 16 sub-views: `1A`–`1C`, `2A`–`2B`, `3A`–`3D`, `4A`–`4B`, `5A`–`5B`, `6A`–`6C`).
-  3. **Automated Verification Passed (0 Errors)**: Verified `node --check` across all 8 JS files, HTML asset & cross-link existence (`index.html` in both explainers), `viewBox` bounds and `>= 6 px` non-overlap geometry across all 16 sub-views, zero edge-through-node interior crossings, text-inside-shape character/line fit, portal & trace referential integrity, and a DOM-mock smoke test exercising all section/sub-view/trace/portal/export flows. (*Open `docs/trigger_explainer/index.html` directly in a browser via `file://` for final visual review before locking Phase 2.*)
+  1. Built `docs/trigger_explainer/index.html`, `style.css`, and `flowchart_engine.js` (process boxes, decision diamonds, green `RETURN`/`SKIP` pills, coral `DROWSY`/`DISTRACTED` pills, clickable `GOTO`/`FROM` portals with `"<- Back"` navigation history stack, full-flowchart upfront display + branch trace spotlighting, 4-layer side-panel disclosures including the collapsible bold **`Code:`** toggle, and clean SVG export). Added cross-navigation links between `docs/explainer/index.html` and `docs/trigger_explainer/index.html` and added explicit `[hidden] { display: none !important; }` guards.
+  2. Authored `sections/sec1_vehicle_calib_fsm.js` through `sections/sec6_alarms_dispatcher.js` (all 6 sections / 16 sub-views: `1A`–`1C`, `2A`–`2B`, `3A`–`3D`, `4A`–`4B`, `5A`–`5B`, `6A`–`6C`) using clean human-readable labels and symbol-free general descriptions, moving all C++ expressions and formulas into each item's **`Code:`** block.
+  3. **Automated Verification Passed (0 Errors)**: Verified `node --check` across all 8 JS files, HTML asset & cross-link existence, CSS `[hidden]` override rules, `viewBox` bounds and `>= 6 px` non-overlap geometry across all 16 sub-views, zero edge-through-node interior crossings, text-inside-shape character/line fit, portal & trace referential integrity, strict no-code-in-nodes/prose linting, non-empty **`Code:`** coverage across all overviews/nodes/traces, and a DOM-mock smoke test exercising all section/sub-view/trace/portal/`Code:`/export flows.
 - **Phase 2 Build — Pending User Review (`sec7_subroutine_overview.js`)**:
   1. Review Phase 1 flowcharts and confirm **Candidate A** vs. **Candidate B** for `sec7_subroutine_overview.js`.
   2. Implement Section 7 with clickable drill-down links into Phase-1 cut-off views and re-verify geometry & SVG export.

@@ -120,7 +120,7 @@
 
   function drawStage(sub) {
     const stage = $("stage");
-    stage.setAttribute("viewBox", sub.viewBox || "0 0 1120 660");
+    stage.setAttribute("viewBox", sub.viewBox || "0 0 1080 580");
     stage.innerHTML = "";
 
     const defs = svgEl("defs");
@@ -445,7 +445,7 @@
       mode: state.mode,
       stepIdx: state.stepIdx,
       selectedNodeId: state.selectedNodeId,
-      callerLabel: `${callerSub.id}: ${callerSub.label || callerSec.title}`
+      callerLabel: callerSub.label || callerSec.title
     });
     state.secIdx = loc.sIdx;
     state.subIdx = loc.subIdx;
@@ -534,15 +534,19 @@
     });
   }
 
-  function setDisclosures(title, concept, note, codeRef, badgeText, jumpTarget) {
+  function setDisclosures(title, concept, code, note, codeRef, badgeText, jumpTarget) {
     $("info-badge").textContent = badgeText;
     $("step-title").textContent = title || "";
     $("step-concept").textContent = concept || "";
 
+    const codeBox = $("code-box");
     const t2 = $("tier2-box");
     const t3 = $("tier3-box");
+    codeBox.open = false;
     t2.open = false;
     t3.open = false;
+    codeBox.hidden = !code;
+    if (code) $("step-code").textContent = code;
     t2.hidden = !note;
     if (note) $("step-note").textContent = note;
     t3.hidden = !codeRef;
@@ -552,7 +556,7 @@
     if (jumpTarget && findLocation(jumpTarget.sectionId, jumpTarget.subviewId)) {
       const loc = findLocation(jumpTarget.sectionId, jumpTarget.subviewId);
       const targetSub = sections[loc.sIdx].subviews[loc.subIdx];
-      jumpBtn.textContent = `Jump to ${targetSub.id}: ${targetSub.label} ->`;
+      jumpBtn.textContent = `Jump to ${targetSub.label} ->`;
       jumpBtn.hidden = false;
       jumpBtn.onclick = () => jumpToPortal(jumpTarget);
     } else {
@@ -631,6 +635,7 @@
         setDisclosures(
           selNode.details.title || selNode.label.replace(/\n/g, " "),
           selNode.details.concept,
+          selNode.details.code,
           selNode.details.note,
           selNode.details.codeRef,
           "Selected Node",
@@ -641,6 +646,7 @@
         setDisclosures(
           step.title,
           step.concept,
+          step.code,
           step.note,
           step.codeRef,
           `Trace Step ${state.stepIdx + 1}/${steps.length}`,
@@ -676,6 +682,7 @@
         setDisclosures(
           d.title || selNode.label.replace(/\n/g, " "),
           d.concept || fallbackConcept,
+          d.code,
           d.note,
           d.codeRef,
           selNode.target ? "Portal Node" : "Selected Node",
@@ -687,6 +694,7 @@
         setDisclosures(
           ov.title || `${sub.id}: ${sub.label}`,
           ov.concept || sub.subtitle || "",
+          ov.code,
           ov.note,
           ov.codeRef,
           "Subview Overview",
@@ -715,12 +723,12 @@
     const clone = stage.cloneNode(true);
     clone.setAttribute("font-family", "system-ui, -apple-system, Segoe UI, sans-serif");
 
-    const vb = (sub.viewBox || "0 0 1120 660").split(/\s+/);
+    const vb = (sub.viewBox || "0 0 1080 580").split(/\s+/);
     const bg = document.createElementNS(NS, "rect");
     bg.setAttribute("x", vb[0] || "0");
     bg.setAttribute("y", vb[1] || "0");
-    bg.setAttribute("width", vb[2] || "1120");
-    bg.setAttribute("height", vb[3] || "660");
+    bg.setAttribute("width", vb[2] || "1080");
+    bg.setAttribute("height", vb[3] || "580");
     bg.setAttribute("fill", "#ffffff");
     clone.insertBefore(bg, clone.firstChild);
 

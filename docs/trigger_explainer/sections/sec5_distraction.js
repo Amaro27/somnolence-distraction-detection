@@ -6,162 +6,192 @@ window.TRIGGER_SECTIONS.push({
     {
       id: "5A",
       label: "5A. Fused Algorithm",
-      subtitle: "224x224 grayscale CLAHE + ImageNet -> ResNet-18 + 10f LSTM -> P>=0.54 -> 10f mode + 2.0 s timer",
-      viewBox: "0 0 1120 660",
+      subtitle: "224x224 grayscale contrast & ImageNet norm -> ResNet-18 + 10-frame LSTM -> 54% vote -> 10f mode + 2.0 s timer",
+      viewBox: "0 0 1080 580",
       legend: ["process", "decision", "return", "alarm", "yes", "no"],
       overview: {
-        title: "5A: Gaze Distraction — Fused Algorithm View",
-        concept: "End-to-end algorithmic flow from BGR frame through grayscale-replicated CLAHE and ImageNet normalization, ResNet-18 spatial embedding + 10-frame (or 20-frame) LSTM sequence inference, per-frame BinarizeThreshold classification (P(looking) >= 0.54), and the 2-stage temporal filter (10f majority mode + 2.0 s continuous duration).",
-        note: "Preprocessor.cpp L40-43 converts resized RGB to 1-channel grayscale, runs CLAHE (clipLimit=2.5, 8x8 tiles), and converts GRAY2RGB before ImageNet channel affine scaling. Default preset is preopt (10 frames); --unified uses 20 frames.",
+        title: "Gaze Distraction — Fused Algorithm View",
+        concept: "Normalizes each 224x224 frame with grayscale contrast enhancement and ImageNet scaling, extracts spatial features via ResNet-18 into a 10-frame circular buffer (20 frames under the unified preset), classifies road attention with an LSTM head (54% cutoff), and requires a 10-frame off-road majority sustained for 2.0 seconds to trigger Distracted.",
+        code: "// 224x224 Gray CLAHE + ImageNet -> ResNet18 (512-d) -> LSTM -> Softmax\nGazeClass c = (p_looking >= 0.54f) ? LookingRoad : NotLookingRoad;\n// 2-stage filter: window.size() == 10 && not_looking > looking for >= 2000 ms",
+        note: "Grayscale contrast enhancement converts the resized RGB frame to grayscale, applies CLAHE (clip 2.5, 8x8 tiles), and replicates it across 3 channels to match training.",
         codeRef: "src/Preprocessor.cpp (L33-84)\nsrc/GazeDetector.cpp (L99-190)\nsrc/AlertLogic.cpp (L5-49)\ninclude/Types.hpp (L57-61, L149-155, L172-179)"
       },
       nodes: [
         {
-          id: "pre_clahe", kind: "process", x: 20, y: 26, w: 240, h: 78,
-          label: "Preprocess 224x224 NCHW", sublabel: "BGR->RGB->224x224->Gray\nCLAHE(2.5, 8x8)->GRAY2RGB\nImageNet (x/255 - mean)/std",
+          id: "pre_clahe", kind: "process", x: 20, y: 26, w: 230, h: 58,
+          label: "Preprocess 224x224 Frame", sublabel: "Grayscale CLAHE & ImageNet scale",
           details: {
-            concept: "Normalizes frame lighting via grayscale CLAHE replicated across 3 channels, then packs NCHW float32 tensor (1x3x224x224).",
+            title: "Frame Preprocessing",
+            concept: "Resizes the frame to 224x224, equalizes luminance contrast in grayscale, replicates across 3 channels, and applies ImageNet mean/std normalization.",
+            code: "cv::resize(rgb, resized, Size(224, 224));\ncv::cvtColor(resized, gray, COLOR_RGB2GRAY); clahe_->apply(gray, clahe_gray);\n// Pack planar float32 (1 x 3 x 224 x 224): pixel * SCALE + SHIFT",
             codeRef: "src/Preprocessor.cpp (L33-84)"
           }
         },
         {
-          id: "resnet_ring", kind: "process", x: 295, y: 26, w: 255, h: 78,
-          label: "ResNet-18 + Ring Buffer", sublabel: "512-d feat -> 10f ring buf\n(20f if --unified); left-pad\nwarmup with earliest feat",
+          id: "resnet_ring", kind: "process", x: 285, y: 26, w: 235, h: 58,
+          label: "ResNet-18 + 10f Buffer", sublabel: "512-d feat; left-pad cold start",
           details: {
-            concept: "Extracts a 512-d spatial feature vector and stores it in a pre-allocated ring buffer, padding unfilled leading slots during cold start with the oldest vector.",
+            title: "Spatial Backbone & Ring Buffer",
+            concept: "Extracts a 512-dimensional feature vector per frame and writes it into a 10-frame circular buffer (20 frames for unified), padding empty startup slots with the earliest embedding.",
+            code: "cv::Mat feat = net_backbone_.forward(); // 512-d\nmemcpy(ring_buffer_.data() + ring_head_ * 512, feat.ptr<float>(0), ...);\n// pack_sequence_blob(): pad leading slots with oldest_ptr when ring_count_ < seq_len",
             codeRef: "src/GazeDetector.cpp (L99-140)"
           }
         },
         {
-          id: "lstm_softmax", kind: "process", x: 585, y: 26, w: 235, h: 78,
-          label: "LSTM Head + Softmax", sublabel: "Forward (1x10x512)\nP_not_look, P_look = softmax",
+          id: "lstm_softmax", kind: "process", x: 555, y: 26, w: 225, h: 58,
+          label: "LSTM Head + Softmax", sublabel: "Score road-attention odds",
           details: {
-            concept: "Evaluates the temporal feature sequence with the LSTM ONNX head and applies numerically stable softmax.",
+            title: "Temporal LSTM Sequence Head",
+            concept: "Feeds the 10-frame feature sequence into the LSTM head and applies numerically stable softmax to get road-looking vs. off-road probabilities.",
+            code: "net_head_.setInput(seq_blob_);\ncv::Mat logits = net_head_.forward();\n// Softmax -> p_not_looking, p_looking",
             codeRef: "src/GazeDetector.cpp (L141-155)"
           }
         },
         {
-          id: "chk_conf", kind: "decision", x: 855, y: 18, w: 240, h: 94,
-          label: "P(looking) >= 0.54?", sublabel: "Binarize policy",
+          id: "chk_conf", kind: "decision", x: 820, y: 14, w: 235, h: 82,
+          label: "Looking-Road Prob\n>= 54%?", sublabel: "Binarize policy",
           details: {
-            concept: "Assigns per-frame LookingRoad if P(looking) >= 0.54, else NotLookingRoad (Argmax & FilterUncertain policies also supported via flags).",
+            title: "Per-Frame Confidence Policy",
+            concept: "Under the default binarize policy, frames with road-looking probability of 54% or higher vote attentive; anything below votes off-road.",
+            code: "assigned_class = (p_looking >= min_confidence) // 0.54f\n  ? GazeClass::LookingRoad : GazeClass::NotLookingRoad;",
+            note: "Alternative CLI policies include Argmax (50/50 split) and FilterUncertain (ignoring ambiguous frames around 50%).",
             codeRef: "src/GazeDetector.cpp (L156-182)"
           }
         },
         {
-          id: "push_mode", kind: "process", x: 855, y: 156, w: 240, h: 72,
-          label: "Push Vote to 10f Window", sublabel: "gaze_window_.push_back()\nTrim oldest if > 10 (or 20)",
+          id: "push_mode", kind: "process", x: 820, y: 136, w: 235, h: 56,
+          label: "Push to 10-Frame Window", sublabel: "Keep newest 10 votes (or 20)",
           details: {
-            concept: "Maintains a sliding window of the latest mode_window_frames classifications (default matches seq_len = 10).",
+            title: "Sliding Mode Window",
+            concept: "Appends the single-frame vote to the sliding evaluation deque and discards the oldest vote beyond the window size.",
+            code: "gaze_window_.push_back(detection);\nwhile (gaze_window_.size() > mode_frames) gaze_window_.pop_front();",
             codeRef: "src/AlertManager.cpp (L94-100)"
           }
         },
         {
-          id: "chk_warmup", kind: "decision", x: 580, y: 146, w: 235, h: 92,
-          label: "window.size() < 10?", sublabel: "Sliding window warmup",
+          id: "chk_warmup", kind: "decision", x: 550, y: 123, w: 225, h: 82,
+          label: "Window Has < 10\nFrames?", sublabel: "Mode warmup check",
           details: {
-            concept: "Waits until mode_window_frames predictions accumulate before evaluating distraction mode.",
+            title: "Sliding Window Warmup",
+            concept: "Waits until the sliding window holds a full 10 votes (or 20 under unified) before running distraction decisions.",
+            code: "if (gaze_window_.size() < mode_frames) return;",
             codeRef: "src/AlertManager.cpp (L102-105)"
           }
         },
         {
-          id: "ret_warmup", kind: "term_return", x: 580, y: 282, w: 235, h: 54,
+          id: "ret_warmup", kind: "term_return", x: 550, y: 244, w: 225, h: 50,
           label: "RETURN", sublabel: "Mode window warming up",
           details: {
-            concept: "Returns without evaluating Stage 1 or Stage 2 until 10 frames fill the window.",
+            title: "Warmup Return",
+            concept: "Exits early while the sliding vote buffer fills.",
+            code: "return; // Waiting for mode_frames predictions",
             codeRef: "src/AlertManager.cpp (L103-105)"
           }
         },
         {
-          id: "chk_stage1", kind: "decision", x: 280, y: 144, w: 255, h: 96,
-          label: "Stage 1: Off-Road Votes\n> On-Road Votes?", sublabel: "Sliding mode majority",
+          id: "chk_stage1", kind: "decision", x: 265, y: 122, w: 240, h: 84,
+          label: "Stage 1: Off-Road\n> On-Road Votes?", sublabel: "Sliding mode majority",
           details: {
-            concept: "evaluate_distraction_mode() checks strict majority: not_looking_votes > looking_votes across the 10-frame window.",
+            title: "Stage 1 Sliding Mode Majority",
+            concept: "Requires strictly more off-road votes than road-looking votes across the 10-frame sliding window.",
+            code: "assessment.is_distracted = (not_looking_count > looking_count);",
             codeRef: "src/AlertLogic.cpp (L5-49)"
           }
         },
         {
-          id: "reset_timer", kind: "process", x: 20, y: 156, w: 220, h: 72,
-          label: "Reset Sustained Timer", sublabel: "distracted_since_.reset()\nReturn to attentive state",
+          id: "reset_timer", kind: "process", x: 20, y: 136, w: 210, h: 56,
+          label: "Reset Sustained Timer", sublabel: "Return gaze to road",
           details: {
-            concept: "When gaze returns to the road (or ties 5-5), the 2.0 s continuous distraction timer resets immediately.",
+            title: "Reset Sustained Distraction Timer",
+            concept: "Clears the continuous off-road timestamp immediately whenever road attention recovers or votes tie.",
+            code: "distracted_since_.reset();\nif (current_state_ == DriverState::Distracted) current_state_ = DriverState::Safe;",
             codeRef: "src/AlertManager.cpp (L123-144)"
           }
         },
         {
-          id: "ret_attentive", kind: "term_return", x: 20, y: 282, w: 220, h: 54,
+          id: "ret_attentive", kind: "term_return", x: 20, y: 244, w: 210, h: 50,
           label: "RETURN", sublabel: "Looking at road (Safe)",
           details: {
-            concept: "Driver is attentive; no distraction alarm emitted.",
+            title: "Attentive Safe Return",
+            concept: "Driver is attentive on the road; no distraction alarm triggers.",
+            code: "// State remains Safe",
             codeRef: "src/AlertManager.cpp (L138-144)"
           }
         },
         {
-          id: "hold_timer", kind: "process", x: 280, y: 284, w: 255, h: 70,
-          label: "Start / Hold 2.0 s Timer", sublabel: "If unset: distracted_since = now\nelapsed = now - distracted_since",
+          id: "hold_timer", kind: "process", x: 265, y: 244, w: 240, h: 56,
+          label: "Start / Hold 2.0 s Timer", sublabel: "Track continuous off-road span",
           details: {
-            concept: "Starts the continuous off-road timer on the first NotLookingRoad majority window.",
+            title: "Track Continuous Distraction",
+            concept: "Records the start timestamp on the first off-road majority frame and measures elapsed duration.",
+            code: "if (!distracted_since_.has_value()) distracted_since_ = now;\nconst auto sustained = duration_cast<milliseconds>(now - *distracted_since_);",
             codeRef: "src/AlertManager.cpp (L130-133)"
           }
         },
         {
-          id: "chk_stage2", kind: "decision", x: 280, y: 396, w: 255, h: 98,
-          label: "Stage 2: elapsed\n>= 2000 ms?", sublabel: "Continuous distraction",
+          id: "chk_stage2", kind: "decision", x: 265, y: 342, w: 240, h: 86,
+          label: "Stage 2: Sustained\n>= 2.0 Seconds?", sublabel: "Continuous off-road",
           details: {
-            concept: "Requires the sliding mode to stay off-road continuously for 2.0 seconds before alarming.",
+            title: "Stage 2 Continuous Duration Gate",
+            concept: "Requires off-road mode to hold continuously for at least 2.0 seconds so quick mirror checks do not alarm.",
+            code: "if (sustained >= config_.distraction_window) { // 2000 ms\n  current_state_ = DriverState::Distracted; trigger_distraction_alert = true;\n}",
             codeRef: "src/AlertManager.cpp (L134-137)"
           }
         },
         {
-          id: "ret_counting", kind: "term_return", x: 20, y: 418, w: 220, h: 54,
-          label: "RETURN", sublabel: "Off-road (< 2.0 s)",
+          id: "ret_counting", kind: "term_return", x: 20, y: 360, w: 210, h: 50,
+          label: "RETURN", sublabel: "Brief glance (< 2.0 s)",
           details: {
-            concept: "Brief mirror or dashboard check under 2.0 s does not trigger an alarm.",
+            title: "Under 2-Second Return",
+            concept: "Short off-road glances under 2.0 seconds return without raising an alarm.",
+            code: "// sustained < 2000 ms: continue counting",
             codeRef: "src/AlertManager.cpp (L134-137)"
           }
         },
         {
-          id: "term_distracted", kind: "term_alarm", x: 585, y: 415, w: 240, h: 62,
-          label: "DISTRACTED", sublabel: "Clear window + timer after beep",
+          id: "term_distracted", kind: "term_alarm", x: 555, y: 359, w: 235, h: 52,
+          label: "DISTRACTED", sublabel: "Wipes window & timer after beep",
           details: {
-            concept: "Triggers distraction warning, then clears gaze_window_ and distracted_since_ after playback finishes.",
+            title: "Distraction Verdict",
+            concept: "Marks the driver Distracted, dispatches the warning, and resets the 10-frame window and timer once audio finishes.",
+            code: "current_state_ = DriverState::Distracted;\n// After audio: gaze_window_.clear(); distracted_since_.reset();",
             codeRef: "src/AlertManager.cpp (L135-136, L187-192)"
           }
         }
       ],
       edges: [
-        { id: "e_pre_res", points: [[260, 65], [295, 65]], tone: "default" },
-        { id: "e_res_lst", points: [[550, 65], [585, 65]], tone: "default" },
-        { id: "e_lst_cnf", points: [[820, 65], [855, 65]], tone: "default" },
-        { id: "e_cnf_psh", points: [[975, 112], [975, 156]], label: "vote", tone: "default" },
-        { id: "e_psh_wu", points: [[855, 192], [815, 192]], tone: "default" },
-        { id: "e_wu_yes", points: [[697, 238], [697, 282]], label: "YES", tone: "yes" },
-        { id: "e_wu_no", points: [[580, 192], [535, 192]], label: "NO", tone: "no" },
-        { id: "e_s1_no", points: [[280, 192], [240, 192]], label: "NO", tone: "no" },
-        { id: "e_rst_ret", points: [[130, 228], [130, 282]], tone: "default" },
-        { id: "e_s1_yes", points: [[407, 240], [407, 284]], label: "YES", tone: "yes" },
-        { id: "e_tmr_s2", points: [[407, 354], [407, 396]], tone: "default" },
-        { id: "e_s2_no", points: [[280, 445], [240, 445]], label: "NO", tone: "no" },
-        { id: "e_s2_yes", points: [[535, 445], [585, 445]], label: "YES", tone: "yes" }
+        { id: "e_pre_res", points: [[250, 55], [285, 55]], tone: "default" },
+        { id: "e_res_lst", points: [[520, 55], [555, 55]], tone: "default" },
+        { id: "e_lst_cnf", points: [[780, 55], [820, 55]], tone: "default" },
+        { id: "e_cnf_psh", points: [[937, 96], [937, 136]], label: "vote", tone: "default" },
+        { id: "e_psh_wu", points: [[820, 164], [775, 164]], tone: "default" },
+        { id: "e_wu_yes", points: [[662, 205], [662, 244]], label: "YES", tone: "yes" },
+        { id: "e_wu_no", points: [[550, 164], [505, 164]], label: "NO", tone: "no" },
+        { id: "e_s1_no", points: [[265, 164], [230, 164]], label: "NO", tone: "no" },
+        { id: "e_rst_ret", points: [[125, 192], [125, 244]], tone: "default" },
+        { id: "e_s1_yes", points: [[385, 206], [385, 244]], label: "YES", tone: "yes" },
+        { id: "e_tmr_s2", points: [[385, 300], [385, 342]], tone: "default" },
+        { id: "e_s2_no", points: [[265, 385], [230, 385]], label: "NO", tone: "no" },
+        { id: "e_s2_yes", points: [[505, 385], [555, 385]], label: "YES", tone: "yes" }
       ],
       traces: [
         {
           id: "gaze_warmup",
-          label: "Trace: Cold-Start Padding -> 10f Warmup -> Road Attentive",
+          label: "Trace: Cold-Start Padding -> 10f Warmup -> Attentive",
           steps: [
             {
-              title: "Step 1: Warmup Padding & 10-Frame Window Fill",
+              title: "Step 1: Warmup Padding & 10-Frame Buffer Fill",
               highlightNodes: ["pre_clahe", "resnet_ring", "lstm_softmax", "chk_conf", "push_mode", "chk_warmup", "ret_warmup"],
               highlightEdges: ["e_pre_res", "e_res_lst", "e_lst_cnf", "e_cnf_psh", "e_psh_wu", "e_wu_yes"],
-              concept: "During startup, ResNet-18 embeddings front-pad the 10-slot LSTM sequence with the earliest feature, while the 10-frame mode window fills before Stage 1 runs.",
-              codeRef: "src/GazeDetector.cpp (L109-118) | src/AlertManager.cpp (L102-105)"
+              concept: "During startup, ResNet-18 features left-pad the 10-slot sequence buffer, and the sliding vote window fills to 10 frames before Stage 1 runs.",
+              code: "if (ring_count_ < seq_len) pad_leading_with(oldest);\nif (gaze_window_.size() < mode_frames) return;"
             },
             {
-              title: "Step 2: On-Road Majority Keeps Safe",
+              title: "Step 2: On-Road Majority Keeps Driver Safe",
               highlightNodes: ["chk_stage1", "reset_timer", "ret_attentive"],
               highlightEdges: ["e_wu_no", "e_s1_no", "e_rst_ret"],
-              concept: "Once warmed up, if LookingRoad votes >= NotLookingRoad votes, distracted_since resets and driver remains Safe.",
-              codeRef: "src/AlertLogic.cpp (L47) | src/AlertManager.cpp (L138-144)"
+              concept: "With attentive votes at or above off-road votes, the sustained timer stays clear and driver state remains Safe.",
+              code: "assessment.is_distracted = false; distracted_since_.reset();"
             }
           ]
         },
@@ -170,11 +200,11 @@ window.TRIGGER_SECTIONS.push({
           label: "Trace: 10f Majority Held >= 2.0 s -> DISTRACTED",
           steps: [
             {
-              title: "Stage 1 Majority + Stage 2 >= 2000 ms -> DISTRACTED",
+              title: "Stage 1 Majority Held 2.0 Seconds Triggers DISTRACTED",
               highlightNodes: ["chk_conf", "push_mode", "chk_warmup", "chk_stage1", "hold_timer", "chk_stage2", "term_distracted"],
               highlightEdges: ["e_cnf_psh", "e_psh_wu", "e_wu_no", "e_s1_yes", "e_tmr_s2", "e_s2_yes"],
-              concept: "When > 50% of the 10-frame window stays NotLookingRoad continuously for >= 2.0 s, DISTRACTED triggers.",
-              codeRef: "src/AlertManager.cpp (L129-137)"
+              concept: "When off-road majority persists continuously for at least 2.0 seconds, the system declares Distracted.",
+              code: "if (not_looking > looking && sustained >= 2000ms) current_state_ = DriverState::Distracted;"
             }
           ]
         },
@@ -183,11 +213,11 @@ window.TRIGGER_SECTIONS.push({
           label: "Trace: Brief Mirror Check (< 2.0 s) -> Timer Clears",
           steps: [
             {
-              title: "Short Glance (< 2.0 s) Resets Before Trigger",
+              title: "Short Glance Resets Before 2.0 Seconds",
               highlightNodes: ["chk_stage1", "hold_timer", "chk_stage2", "ret_counting", "reset_timer", "ret_attentive"],
               highlightEdges: ["e_s1_yes", "e_tmr_s2", "e_s2_no", "e_s1_no", "e_rst_ret"],
-              concept: "Looking away for under 2.0 s enters Stage 2's NO branch, and looking back resets distracted_since_ immediately.",
-              codeRef: "src/AlertManager.cpp (L129-144)"
+              concept: "Looking away under 2.0 seconds does not alarm, and returning eyes to the road immediately clears the timer.",
+              code: "// sustained < 2000 ms -> next attentive frame clears distracted_since_"
             }
           ]
         }
@@ -196,122 +226,141 @@ window.TRIGGER_SECTIONS.push({
     {
       id: "5B",
       label: "5B. System & FSM Cut-Off",
-      subtitle: "Strict C++ cut-off at GazeDetector: atomic reset, MovingCalibrated gate & 1-frame vote -> GOTO 6A",
-      viewBox: "0 0 1120 660",
+      subtitle: "Strict C++ cut-off at Gaze Detector: atomic reset, Moving-Calibrated gate & single vote -> GOTO 6A",
+      viewBox: "0 0 1080 580",
       legend: ["portal_in", "process", "decision", "portal_out", "return", "yes", "no", "portal_edge"],
       overview: {
-        title: "5B: Distraction — System & FSM Cut-Off View",
-        concept: "Matches the exact C++ worker/class boundary on GazeWorker: consumes the atomic gaze_reset_requested_ flag, discards frames immediately if SystemState != MovingCalibrated (zero neural compute), runs Preprocessor + ResNet-18 + LSTM, and cuts off right after emitting 1 frame classification into AlertManager (6A).",
-        note: "Unlike FatigueWorker (which keeps Yawn CNN and landmarks running while parked), GazeWorker skips ALL inference when parked, uncalibrated, or calibrating.",
+        title: "Distraction — System & FSM Cut-Off View",
+        concept: "Captures the exact worker and class boundary on the Gaze Worker thread: consumes the atomic reset flag safely in-thread, skips all neural work when not moving and calibrated, runs ResNet-18 plus LSTM, and cuts off right after emitting a single frame vote into the Alert Coordinator (6A).",
+        code: "if (gaze_reset_requested_.exchange(false, acq_rel)) gaze_detector_.reset();\nif (system_state_.load() != SystemState::MovingCalibrated) continue;\nauto res = gaze_detector_.infer_frame(blob, min_conf, policy);\nalert_manager_.update_gaze(res);",
+        note: "Unlike the Fatigue Worker (which keeps HUD telemetry running when parked), the Gaze Worker performs zero neural inference whenever parked, uncalibrated, or calibrating.",
         codeRef: "src/PipelineCoordinator.cpp (L69-108, L331, L341, L399-457, L669, L677)\nsrc/GazeDetector.cpp (L94-190)"
       },
       nodes: [
         {
-          id: "from_atomic_reset", kind: "portal_in", x: 24, y: 34, w: 235, h: 66,
-          label: "FROM 1A: ATOMIC RESET", sublabel: "gaze_reset_requested_ flag\n(set on Park by Main / IMU)",
+          id: "from_atomic_reset", kind: "portal_in", x: 24, y: 26, w: 225, h: 56,
+          label: "FROM 1A: Gaze Reset Flag", sublabel: "Raised on park by Main / IMU",
           target: { sectionId: "sec1", subviewId: "1A", highlightNodeId: "set_gaze_atomic" },
           details: {
-            concept: "Main ('m') and IMU threads never mutate GazeDetector directly; they store gaze_reset_requested_ = true.",
+            title: "Atomic Reset Signal",
+            concept: "Main and IMU threads set an atomic flag on parking rather than touching Gaze Detector's circular buffer across threads.",
+            code: "gaze_reset_requested_.store(true, std::memory_order_release);",
             codeRef: "src/PipelineCoordinator.cpp (L331, L341, L669, L677)"
           }
         },
         {
-          id: "chk_atomic", kind: "decision", x: 295, y: 20, w: 255, h: 96,
-          label: "gaze_reset_requested_\n.exchange(false)?", sublabel: "Before & after mailbox",
+          id: "chk_atomic", kind: "decision", x: 290, y: 12, w: 245, h: 84,
+          label: "Atomic Reset Flag\nRaised?", sublabel: "Checked pre & post wait",
           details: {
-            concept: "Checked both before and right after mailbox_gaze_->get_latest() so a stop during frame wait still cleans up cleanly.",
+            title: "Atomic Reset Exchange",
+            concept: "Atomically reads and clears the reset request both before and immediately after waiting on the latest camera frame.",
+            code: "if (gaze_reset_requested_.exchange(false, std::memory_order_acq_rel))\n  gaze_detector_.reset();",
             codeRef: "src/PipelineCoordinator.cpp (L412-426)"
           }
         },
         {
-          id: "wipe_ring", kind: "process", x: 595, y: 32, w: 235, h: 72,
-          label: "gaze_detector_.reset()", sublabel: "ring_head = 0; ring_count = 0\n(Thread-confined, lock-free)",
+          id: "wipe_ring", kind: "process", x: 585, y: 26, w: 230, h: 56,
+          label: "Clear Sequence Buffer", sublabel: "Reset circular buffer in-thread",
           details: {
-            concept: "Resets circular buffer indices safely on GazeWorker's own thread with zero mutex overhead.",
+            title: "Thread-Confined Ring Wipe",
+            concept: "Zeroes ring indices safely on the Gaze Worker's own thread with zero mutex overhead.",
+            code: "void GazeDetector::reset() noexcept {\n  ring_head_ = 0; ring_count_ = 0;\n}",
             codeRef: "src/PipelineCoordinator.cpp (L412-426) | src/GazeDetector.cpp (L94-97)"
           }
         },
         {
-          id: "gate_mov_cal", kind: "decision", x: 295, y: 162, w: 255, h: 100,
-          label: "READ 1A: SystemState\n== MovingCalibrated?", sublabel: "Click -> 1A FSM",
+          id: "gate_mov_cal", kind: "decision", x: 290, y: 138, w: 245, h: 86,
+          label: "READ 1A: Moving\n& Calibrated?", sublabel: "Lifecycle inference gate",
           target: { sectionId: "sec1", subviewId: "1A", highlightNodeId: "st_mov_cal" },
           details: {
-            concept: "Hard inference gate in GazeWorker: skips Preprocessor, ResNet-18, and LSTM whenever not MovingCalibrated.",
+            title: "Moving & Calibrated Gate",
+            concept: "Discards incoming camera frames immediately unless the vehicle is both moving and calibrated.",
+            code: "if (system_state_.load() != SystemState::MovingCalibrated) continue;",
             codeRef: "src/PipelineCoordinator.cpp (L428-431)"
           }
         },
         {
-          id: "skip_frame", kind: "term_return", x: 605, y: 184, w: 240, h: 58,
+          id: "skip_frame", kind: "term_return", x: 585, y: 156, w: 230, h: 50,
           label: "SKIP FRAME", sublabel: "Zero neural compute",
           details: {
-            concept: "Discards the frame and loops back to wait on mailbox_gaze_ without running ResNet-18 or LSTM.",
+            title: "Idle Frame Skip",
+            concept: "Skips preprocessing and both neural models completely when stationary, uncalibrated, or calibrating.",
+            code: "continue; // Skip Preprocessor, ResNet-18, and LSTM",
             codeRef: "src/PipelineCoordinator.cpp (L429-431)"
           }
         },
         {
-          id: "pre_cut", kind: "process", x: 295, y: 312, w: 255, h: 74,
-          label: "Preprocessor::process", sublabel: "224x224 Grayscale CLAHE\n+ ImageNet NCHW blob",
+          id: "pre_cut", kind: "process", x: 290, y: 268, w: 245, h: 56,
+          label: "Preprocess 224x224 Frame", sublabel: "Grayscale CLAHE & ImageNet",
           details: {
-            concept: "Writes normalized NCHW tensor directly into pre-allocated input_blob.",
+            title: "Frame Preprocessing",
+            concept: "Prepares the normalized 224x224 tensor into a pre-allocated buffer.",
+            code: "preprocessor_.process(frame, input_blob);",
             codeRef: "src/PipelineCoordinator.cpp (L434) | src/Preprocessor.cpp (L33-84)"
           }
         },
         {
-          id: "net_cut", kind: "process", x: 295, y: 426, w: 255, h: 80,
-          label: "GazeDetector::infer_frame", sublabel: "ResNet-18 (512-d) -> 10f/20f\nring -> LSTM -> Softmax",
+          id: "net_cut", kind: "process", x: 290, y: 368, w: 245, h: 58,
+          label: "Run ResNet-18 + LSTM", sublabel: "Update 10f/20f ring & softmax",
           details: {
-            concept: "Runs spatial backbone + temporal LSTM head and computes softmax probabilities P(not_looking), P(looking).",
+            title: "Spatial-Temporal Inference",
+            concept: "Extracts spatial features into the sequence ring buffer, runs the LSTM head, and computes attention probabilities.",
+            code: "DistractionDetectionResult result = gaze_detector_.infer_frame(\n  input_blob, alert_config_.min_confidence, alert_config_.policy);",
             codeRef: "src/PipelineCoordinator.cpp (L436-440) | src/GazeDetector.cpp (L121-155)"
           }
         },
         {
-          id: "policy_cut", kind: "process", x: 595, y: 426, w: 255, h: 80,
-          label: "Evaluate Frame Policy", sublabel: "Default: Binarize (>=0.54)\n(Opt: FilterUncertain / Argmax)\nEmit 1-frame GazeResult",
+          id: "policy_cut", kind: "process", x: 585, y: 368, w: 230, h: 58,
+          label: "Assign Single-Frame Vote", sublabel: "Default 54% cutoff -> 1 vote",
           details: {
-            concept: "Maps probabilities to a single DistractionDetectionResult{gaze_class, looking_road_probability, timestamp}.",
+            title: "Per-Frame Vote Classification",
+            concept: "Applies the confidence threshold policy to emit a single frame vote and probability.",
+            code: "return DistractionDetectionResult{assigned_class, p_looking, now};",
             codeRef: "src/GazeDetector.cpp (L156-189)"
           }
         },
         {
-          id: "goto_6a", kind: "portal_out", x: 890, y: 430, w: 205, h: 72,
-          label: "GOTO 6A: GAZE_FILTER", sublabel: "update_gaze(result)\n(10f mode + 2s in mutex)",
+          id: "goto_6a", kind: "portal_out", x: 855, y: 369, w: 200, h: 56,
+          label: "GOTO 6A: Gaze Filter", sublabel: "Send 1 vote to mutex",
           target: { sectionId: "sec6", subviewId: "6A", highlightNodeId: "from_gaze_vote" },
           details: {
-            concept: "Strict C++/mutex cut-off: GazeDetector knows nothing about the 10-frame majority filter, 2.0 s timer, drowsiness preemption, or audio; AlertManager handles all of those inside mutex_ (6A).",
+            title: "Handoff to Alert Manager",
+            concept: "Strict boundary cut-off: Gaze Detector outputs one vote per frame and hands off to Alert Manager (6A) for the 10-frame sliding mode, 2-second timer, drowsiness preemption, and audio.",
+            code: "alert_manager_.update_gaze(result);",
             codeRef: "src/PipelineCoordinator.cpp (L443) | src/AlertManager.cpp (L83-145)"
           }
         }
       ],
       edges: [
-        { id: "e_at_in", points: [[259, 68], [295, 68]], tone: "portal" },
-        { id: "e_at_yes", points: [[550, 68], [595, 68]], label: "YES", tone: "yes" },
-        { id: "e_at_no", points: [[422, 116], [422, 162]], label: "NO", tone: "no" },
-        { id: "e_wipe_gt", points: [[712, 104], [712, 134], [422, 134], [422, 162]], tone: "default" },
-        { id: "e_mov_no", points: [[550, 212], [605, 212]], label: "NO", tone: "no" },
-        { id: "e_mov_yes", points: [[422, 262], [422, 312]], label: "YES", tone: "yes" },
-        { id: "e_pre_net", points: [[422, 386], [422, 426]], tone: "default" },
-        { id: "e_net_pol", points: [[550, 466], [595, 466]], tone: "default" },
-        { id: "e_pol_6a", points: [[850, 466], [890, 466]], tone: "portal" }
+        { id: "e_at_in", points: [[249, 54], [290, 54]], tone: "portal" },
+        { id: "e_at_yes", points: [[535, 54], [585, 54]], label: "YES", tone: "yes" },
+        { id: "e_at_no", points: [[412, 96], [412, 138]], label: "NO", tone: "no" },
+        { id: "e_wipe_gt", points: [[700, 82], [700, 114], [412, 114], [412, 138]], tone: "default" },
+        { id: "e_mov_no", points: [[535, 181], [585, 181]], label: "NO", tone: "no" },
+        { id: "e_mov_yes", points: [[412, 224], [412, 268]], label: "YES", tone: "yes" },
+        { id: "e_pre_net", points: [[412, 324], [412, 368]], tone: "default" },
+        { id: "e_net_pol", points: [[535, 397], [585, 397]], tone: "default" },
+        { id: "e_pol_6a", points: [[815, 397], [855, 397]], tone: "portal" }
       ],
       traces: [
         {
           id: "gaze_cut_active",
-          label: "Trace: MovingCalibrated -> Single Vote -> GOTO 6A",
+          label: "Trace: Moving & Calibrated -> Single Vote -> GOTO 6A",
           steps: [
             {
-              title: "Step 1: Reset Clear & MovingCalibrated Passed",
+              title: "Step 1: Reset Clear & Moving-Calibrated Passed",
               highlightNodes: ["chk_atomic", "gate_mov_cal", "pre_cut"],
               highlightEdges: ["e_at_no", "e_mov_yes"],
-              concept: "No atomic reset pending and SystemState == MovingCalibrated, so frame proceeds to CLAHE + ImageNet preprocessing.",
-              codeRef: "src/PipelineCoordinator.cpp (L412-434)"
+              concept: "With no reset pending and vehicle moving calibrated, the frame enters image preprocessing.",
+              code: "preprocessor_.process(frame, input_blob);"
             },
             {
-              title: "Step 2: Single-Frame Vote Crosses into AlertManager (6A)",
+              title: "Step 2: Single-Frame Vote Enters Alert Manager (6A)",
               highlightNodes: ["pre_cut", "net_cut", "policy_cut", "goto_6a"],
               highlightEdges: ["e_pre_net", "e_net_pol", "e_pol_6a"],
-              concept: "GazeDetector produces 1 vote (LookingRoad or NotLookingRoad) and immediately crosses into AlertManager::update_gaze() (6A).",
-              portalTarget: { sectionId: "sec6", subviewId: "6A", highlightNodeId: "from_gaze_vote" },
-              codeRef: "src/GazeDetector.cpp (L121-190) | src/PipelineCoordinator.cpp (L443)"
+              concept: "ResNet-18 plus LSTM produces one attention vote and hands it to the Alert Coordinator (6A).",
+              code: "alert_manager_.update_gaze(result);",
+              portalTarget: { sectionId: "sec6", subviewId: "6A", highlightNodeId: "from_gaze_vote" }
             }
           ]
         },
@@ -320,24 +369,24 @@ window.TRIGGER_SECTIONS.push({
           label: "Trace: Parked / Uncalibrated -> Skip Frame",
           steps: [
             {
-              title: "Zero Neural Compute When Not MovingCalibrated",
+              title: "Zero Neural Compute When Not Driving Calibrated",
               highlightNodes: ["gate_mov_cal", "skip_frame"],
               highlightEdges: ["e_mov_no"],
-              concept: "Whenever parked, uncalibrated, or calibrating, GazeWorker skips preprocessing, ResNet-18, and LSTM completely.",
-              codeRef: "src/PipelineCoordinator.cpp (L428-431)"
+              concept: "Whenever parked, uncalibrated, or calibrating, the Gaze Worker skips all image preprocessing and neural inference.",
+              code: "if (system_state_.load() != SystemState::MovingCalibrated) continue;"
             }
           ]
         },
         {
           id: "gaze_cut_reset",
-          label: "Trace: Park -> Atomic Reset Wipes Ring Buffer",
+          label: "Trace: Park -> Atomic Reset Wipes Sequence Buffer",
           steps: [
             {
-              title: "In-Band Thread-Confined Ring-Buffer Wipe",
+              title: "In-Thread Sequence Wipe on Next Wakeup",
               highlightNodes: ["from_atomic_reset", "chk_atomic", "wipe_ring", "gate_mov_cal", "skip_frame"],
               highlightEdges: ["e_at_in", "e_at_yes", "e_wipe_gt", "e_mov_no"],
-              concept: "Stopping sets gaze_reset_requested_ (1A). GazeWorker consumes it via atomic exchange(false), resets ring_head_/ring_count_ on its own thread, and skips inference.",
-              codeRef: "src/PipelineCoordinator.cpp (L412-431)"
+              concept: "Stopping raises the atomic reset flag (1A); the Gaze Worker consumes it safely on its own thread, resets its ring buffer, and skips inference.",
+              code: "if (gaze_reset_requested_.exchange(false, acq_rel)) gaze_detector_.reset();"
             }
           ]
         }
